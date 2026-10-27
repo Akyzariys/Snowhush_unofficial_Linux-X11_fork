@@ -12,7 +12,9 @@ use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
 use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
-use windows::Win32::UI::Shell::{IVirtualDesktopManager, VirtualDesktopManager};
+use windows::Win32::UI::Shell::{
+    IVirtualDesktopManager, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState, VirtualDesktopManager,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, PWSTR, w};
 
@@ -51,10 +53,13 @@ thread_local! {
 
 struct Window {
     id: isize,
+    class: String,
     /// The visible frame in physical pixels, without the invisible resize border.
     rect: RECT,
     radius: f32,
     cover_only: bool,
+    topmost: bool,
+    zoomed: bool,
 }
 
 /// The windows on screen, front to back, re-read when the system reports a window moving, showing, hiding,
@@ -66,6 +71,8 @@ pub struct Tracker {
     own_process: u32,
     windows: Vec<Window>,
     listed_at: i64,
+    /// The shell's own sense that a full-screen app or presentation is in front.
+    busy: bool,
     pub generation: u64,
     seen: HashSet<isize>,
     pub listings: u32,
@@ -83,7 +90,9 @@ impl Tracker {
         ];
         let hooks = ranges
             .iter()
-            .map(|&(first, last)| unsafe { SetWinEventHook(first, last, None, Some(on_event), 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS) })
+            .map(|&(first, last)| unsafe {
+                SetWinEventHook(first, last, None, Some(on_event), 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS)
+            })
             .filter(|hook| !hook.is_invalid())
             .collect();
         Tracker {
@@ -93,6 +102,7 @@ impl Tracker {
             own_process: std::process::id(),
             windows: Vec::new(),
             listed_at: 0,
+            busy: false,
             generation: 0,
             seen: HashSet::new(),
             listings: 0,
@@ -109,6 +119,8 @@ impl Tracker {
         EVENTS.set(Events { changed: false, ..events });
         let began = Clock::now();
         self.windows = self.list();
+        self.busy = unsafe { SHQueryUserNotificationState() }
+            .is_ok_and(|state| matches!(state, QUNS_BUSY | QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_PRESENTATION_MODE));
         self.cost += Clock::now() - began;
         self.listings += 1;
         self.listed_at = now;
@@ -164,6 +176,27 @@ impl Tracker {
             blockers.push(frame);
         }
         surfaces
+    }
+
+    /// The full-screen window covering the display with these bounds, if any: the frontmost window on it,
+    /// looking past small always-on-top ones, fills it entirely. A maximized window counts only when the shell
+    /// also sees a full-screen app, since it fills the display too wherever the taskbar hides itself.
+    pub fn covering(&self, bounds: &RECT) -> Option<&str> {
+        let foreground = unsafe { GetForegroundWindow() }.0 as isize;
+        for window in &self.windows {
+            let r = &window.rect;
+            if r.right <= bounds.left || r.left >= bounds.right || r.bottom <= bounds.top || r.top >= bounds.bottom {
+                continue;
+            }
+            let fills = r.left <= bounds.left && r.top <= bounds.top && r.right >= bounds.right && r.bottom >= bounds.bottom;
+            if fills && (!window.zoomed || (self.busy && window.id == foreground)) {
+                return Some(&window.class);
+            }
+            if !window.topmost {
+                return None;
+            }
+        }
+        None
     }
 
     /// Whether a window that left the list moved to another virtual desktop, rather than closing or hiding.
@@ -223,10 +256,26 @@ impl Tracker {
                 self.seen.clear();
             }
             if self.seen.insert(id) {
-                log!("window {class} of {}: {}x{} at {},{}", process_name(process), rect.right - rect.left, rect.bottom - rect.top, rect.left, rect.top);
+                log!(
+                    "window {class} of {}: {}x{} at {},{}",
+                    process_name(process),
+                    rect.right - rect.left,
+                    rect.bottom - rect.top,
+                    rect.left,
+                    rect.top
+                );
             }
-            let radius = if self.rounded && !IsZoomed(window).as_bool() { corner_radius(window) } else { 0.0 };
-            Some(Window { id, rect, radius, cover_only: COVER_ONLY.contains(&class.as_str()) })
+            let zoomed = IsZoomed(window).as_bool();
+            let radius = if self.rounded && !zoomed { corner_radius(window) } else { 0.0 };
+            Some(Window {
+                id,
+                cover_only: COVER_ONLY.contains(&class.as_str()),
+                class,
+                rect,
+                radius,
+                topmost: extended & WS_EX_TOPMOST.0 != 0,
+                zoomed,
+            })
         }
     }
 }

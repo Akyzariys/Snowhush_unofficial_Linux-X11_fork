@@ -181,11 +181,8 @@ impl SnowLayer {
         }
         let center = ((x - self.base().x) / self.column_width).floor() as i64;
         let amount = area / self.column_width;
-        let kernel: &[(i64, f32)] = if wide {
-            &[(-2, 0.0625), (-1, 0.25), (0, 0.375), (1, 0.25), (2, 0.0625)]
-        } else {
-            &[(-1, 0.25), (0, 0.5), (1, 0.25)]
-        };
+        let kernel: &[(i64, f32)] =
+            if wide { &[(-2, 0.0625), (-1, 0.25), (0, 0.375), (1, 0.25), (2, 0.0625)] } else { &[(-1, 0.25), (0, 0.5), (1, 0.25)] };
         let mut missed = 0.0;
         for &(offset, weight) in kernel {
             let i = center + offset;

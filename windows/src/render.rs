@@ -134,12 +134,8 @@ impl Gpu {
             let mut blend = None;
             device.CreateBlendState(&blend_desc, Some(&mut blend))?;
 
-            let raster_desc = D3D11_RASTERIZER_DESC {
-                FillMode: D3D11_FILL_SOLID,
-                CullMode: D3D11_CULL_NONE,
-                DepthClipEnable: true.into(),
-                ..Default::default()
-            };
+            let raster_desc =
+                D3D11_RASTERIZER_DESC { FillMode: D3D11_FILL_SOLID, CullMode: D3D11_CULL_NONE, DepthClipEnable: true.into(), ..Default::default() };
             let mut raster = None;
             device.CreateRasterizerState(&raster_desc, Some(&mut raster))?;
 

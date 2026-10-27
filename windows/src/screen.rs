@@ -17,6 +17,8 @@ use windows::core::{BOOL, PCWSTR, Result, w};
 use snowhush::geometry::V2;
 use snowhush::simulation::{Pace, SnowSimulation, WindowId, WindowSurface};
 
+use crate::light::{Backdrop, Wallpapers};
+use crate::log;
 use crate::render::{Ambient, Gpu, Surface};
 use crate::tracker::Tracker;
 
@@ -25,6 +27,8 @@ const CLASS: PCWSTR = w!("SnowhushOverlay");
 thread_local! {
     /// Set by an overlay window when the displays change under it.
     pub static DISPLAYS_CHANGED: Cell<bool> = const { Cell::new(false) };
+    /// Set by an overlay window when the desktop picture or colour changes.
+    pub static BACKDROP_CHANGED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// How much the snow may spend on drawing.
@@ -42,6 +46,8 @@ pub struct Monitor {
     pub name: String,
     /// The work area in physical pixels: the taskbar is the ground the snow settles on, so it is left out.
     pub rect: RECT,
+    /// The whole display in physical pixels.
+    pub bounds: RECT,
     pub dpi: u32,
     pub refresh: u32,
 }
@@ -73,7 +79,13 @@ pub fn monitors() -> Vec<Monitor> {
                 60
             };
             let length = info.szDevice.iter().position(|&c| c == 0).unwrap_or(info.szDevice.len());
-            Some(Monitor { name: String::from_utf16_lossy(&info.szDevice[..length]), rect: info.monitorInfo.rcWork, dpi, refresh })
+            Some(Monitor {
+                name: String::from_utf16_lossy(&info.szDevice[..length]),
+                rect: info.monitorInfo.rcWork,
+                bounds: info.monitorInfo.rcMonitor,
+                dpi,
+                refresh,
+            })
         })
         .collect()
 }
@@ -157,6 +169,9 @@ pub struct Screen {
     surfaces: Vec<WindowSurface>,
     windows_seen: u64,
     windows_changed_at: i64,
+    covered: bool,
+    backdrop: Option<Backdrop>,
+    shadow_tint: [f32; 4],
 }
 
 impl Screen {
@@ -179,12 +194,24 @@ impl Screen {
             surfaces: Vec::new(),
             windows_seen: 0,
             windows_changed_at: 0,
+            covered: false,
+            backdrop: None,
+            shadow_tint: [0.0; 4],
         })
     }
 
     /// Steps the snow and draws it if anything visible changed; returns whether it drew.
     /// `windows` is left out while snow on windows is off.
-    pub fn frame(&mut self, gpu: &Gpu, clock: &Clock, now: i64, budget: PowerBudget, ambient: Ambient, time: f32, windows: Option<&Tracker>) -> Result<bool> {
+    pub fn frame(
+        &mut self,
+        gpu: &Gpu,
+        clock: &Clock,
+        now: i64,
+        budget: PowerBudget,
+        light: [f32; 3],
+        time: f32,
+        windows: Option<&Tracker>,
+    ) -> Result<bool> {
         let dt = if self.last_step == 0 { 1.0 / 60.0 } else { clock.seconds(now - self.last_step).min(0.05) as f32 };
         self.last_step = now;
         if let Some(tracker) = windows {
@@ -206,7 +233,7 @@ impl Screen {
         if !(changed || (self.simulation.has_snow() && self.idle_frames % 2 == 0)) {
             return Ok(false);
         }
-        self.surface.draw(gpu, &self.simulation, ambient, time)?;
+        self.surface.draw(gpu, &self.simulation, Ambient { light, shadow_tint: self.shadow_tint }, time)?;
         Ok(true)
     }
 
@@ -241,6 +268,35 @@ impl Screen {
         self.windows_seen = 0;
     }
 
+    /// Hides the snow while a full-screen app covers the display, and stops it, as it stops over a full-screen app on a Mac.
+    pub fn set_covered(&mut self, covered: bool) {
+        if covered == self.covered {
+            return;
+        }
+        self.covered = covered;
+        unsafe {
+            let _ = ShowWindow(self.overlay.0, if covered { SW_HIDE } else { SW_SHOWNOACTIVATE });
+        }
+        if !covered {
+            self.resume();
+        }
+    }
+
+    pub fn covered(&self) -> bool {
+        self.covered
+    }
+
+    /// Picks up the shadow colour again if the desktop picture changed.
+    pub fn update_backdrop(&mut self, wallpapers: &Wallpapers) {
+        let backdrop = wallpapers.backdrop(&self.monitor.bounds);
+        if backdrop == self.backdrop {
+            return;
+        }
+        self.shadow_tint = backdrop.as_ref().and_then(|backdrop| wallpapers.tint(backdrop)).unwrap_or([0.0; 4]);
+        log!("backdrop of {}: {backdrop:?}, shadow {:?}", self.monitor.name, self.shadow_tint);
+        self.backdrop = backdrop;
+    }
+
     pub fn wake(&mut self, now: i64) {
         self.next_due = self.next_due.min(now);
     }
@@ -261,18 +317,25 @@ impl Screen {
         }
     }
 
-    /// The pointer in overlay coordinates: DIPs up from the bottom left of this display.
+    /// The pointer in overlay coordinates.
     fn cursor(&self) -> V2 {
         let mut point = POINT::default();
         if unsafe { GetCursorPos(&mut point) }.is_err() {
             return V2::new(-10_000.0, -10_000.0);
         }
+        self.local(point.x as f32, point.y as f32)
+    }
+
+    /// A point in physical screen pixels in overlay coordinates: DIPs up from the bottom left of this display's work area.
+    pub fn local(&self, x: f32, y: f32) -> V2 {
         let rect = &self.monitor.rect;
         let (width, height) = physical_size(&self.monitor);
-        V2::new(
-            (point.x - rect.left) as f32 * self.size.0 as f32 / width as f32,
-            (rect.bottom - point.y) as f32 * self.size.1 as f32 / height as f32,
-        )
+        V2::new((x - rect.left as f32) * self.size.0 as f32 / width as f32, (rect.bottom as f32 - y) * self.size.1 as f32 / height as f32)
+    }
+
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        let bounds = &self.monitor.bounds;
+        x >= bounds.left as f32 && x < bounds.right as f32 && y >= bounds.top as f32 && y < bounds.bottom as f32
     }
 }
 
@@ -339,6 +402,14 @@ unsafe extern "system" fn overlay_procedure(window: HWND, message: u32, wparam: 
         }
         WM_SETTINGCHANGE if wparam.0 as u32 == SPI_SETWORKAREA.0 => {
             DISPLAYS_CHANGED.set(true);
+            LRESULT(0)
+        }
+        WM_SETTINGCHANGE if wparam.0 as u32 == SPI_SETDESKWALLPAPER.0 => {
+            BACKDROP_CHANGED.set(true);
+            LRESULT(0)
+        }
+        WM_SYSCOLORCHANGE => {
+            BACKDROP_CHANGED.set(true);
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },

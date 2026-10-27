@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::geometry::{Rect, V2};
-use crate::simulation::{SnowSimulation, Snowfall, Sprite, WindowSurface};
+use crate::simulation::{ScatterPiece, SnowSimulation, Snowfall, Sprite, WindowSurface};
 
 const DT: f32 = 1.0 / 60.0;
 const AWAY: V2 = V2::new(-10_000.0, -10_000.0);
@@ -13,13 +13,7 @@ fn run(simulation: &mut SnowSimulation, seconds: f32, cursor: V2) {
 }
 
 fn surface(id: isize, x: f32, top: f32, width: f32) -> WindowSurface {
-    WindowSurface {
-        id,
-        frame: Rect { x, y: top - 300.0, width, height: 300.0 },
-        blockers: Vec::new(),
-        corner_radius: 8.0,
-        corner_exponent: 2.5,
-    }
+    WindowSurface { id, frame: Rect { x, y: top - 300.0, width, height: 300.0 }, blockers: Vec::new(), corner_radius: 8.0, corner_exponent: 2.5 }
 }
 
 /// Snow area per layer, from the smoothed surfaces the renderer gets.
@@ -127,6 +121,32 @@ fn dragged_window_sheds_its_snow() {
     run(&mut simulation, 3.0, AWAY);
     let shaken = piles(&simulation).iter().find(|(origin, _)| origin.y > 500.0).map_or(0.0, |p| p.1);
     assert!(shaken < resting * 0.7, "resting {resting}, after shaking {shaken}");
+    assert_finite(&simulation);
+}
+
+#[test]
+fn scattered_window_starts_the_held_snowfall() {
+    let mut simulation = SnowSimulation::new(1280.0, 800.0, Snowfall::Steady);
+    simulation.set_snowfall_held(true);
+    run(&mut simulation, 2.0, AWAY);
+    assert_eq!(simulation.sprite_count(), 0, "snowfall should wait for the welcome window");
+
+    let pieces: Vec<ScatterPiece> = (0..2000)
+        .map(|i| ScatterPiece {
+            position: V2::new(420.0 + (i % 70) as f32 * 6.0, 300.0 + (i / 70) as f32 * 6.0),
+            velocity: V2::new(0.0, 60.0),
+            color: [0.1, 0.09, 0.07],
+        })
+        .collect();
+    simulation.scatter(&pieces);
+    let mut released = false;
+    for _ in 0..(10.0 / DT) as usize {
+        simulation.step(DT, AWAY);
+        released |= simulation.take_snowfall_released();
+    }
+    assert!(released, "the scattered snow never reached the ground");
+    run(&mut simulation, 10.0, AWAY);
+    assert!(simulation.sprite_count() > 200, "snowfall didn't start: {}", simulation.sprite_count());
     assert_finite(&simulation);
 }
 
@@ -255,7 +275,13 @@ fn step_cost() {
     let none = HashSet::new();
     let mut simulation = SnowSimulation::new(1920.0, 1080.0, Snowfall::Steady);
     simulation.thaws = true;
-    let window = [WindowSurface { id: 1, frame: Rect { x: 200.0, y: 300.0, width: 900.0, height: 500.0 }, blockers: Vec::new(), corner_radius: 8.0, corner_exponent: 2.5 }];
+    let window = [WindowSurface {
+        id: 1,
+        frame: Rect { x: 200.0, y: 300.0, width: 900.0, height: 500.0 },
+        blockers: Vec::new(),
+        corner_radius: 8.0,
+        corner_exponent: 2.5,
+    }];
     simulation.update_windows(&window, 0.2, &none, &none, false);
     for _ in 0..60 * 30 {
         simulation.step(1.0 / 30.0, AWAY);

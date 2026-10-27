@@ -95,6 +95,14 @@ pub struct Sprite {
     pub lump: f32,
 }
 
+/// A bit of something that crumbles into snow, such as a window: it keeps its colour for a moment while it falls.
+#[derive(Clone, Copy, Debug)]
+pub struct ScatterPiece {
+    pub position: V2,
+    pub velocity: V2,
+    pub color: [f32; 3],
+}
+
 pub struct PileLayer<'a> {
     pub offset: usize,
     pub count: usize,
@@ -127,6 +135,10 @@ struct Flake {
     sway_rate: f32,
     sway_amount: f32,
     settles: bool,
+    /// Scales the snow it leaves where it lands.
+    mass: f32,
+    tint: [f32; 3],
+    tint_amount: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -196,6 +208,11 @@ pub struct SnowSimulation {
     density: f32,
     pub thaws: bool,
     pub accumulates: bool,
+    /// Keeps the snowfall from starting until a scattered window's snow first reaches the bottom of the screen.
+    snowfall_held: bool,
+    /// Set when the held snowfall starts by itself, so the other displays can start theirs.
+    snowfall_released: bool,
+    scattered_until: f64,
     /// The ground first, then one ledge per window, with `ids` alongside.
     layers: Vec<SnowLayer>,
     ids: Vec<WindowId>,
@@ -213,14 +230,7 @@ pub struct SnowSimulation {
 impl SnowSimulation {
     pub fn new(width: f32, height: f32, snowfall: Snowfall) -> SnowSimulation {
         let mut seed = Random::new();
-        let ground = SnowLayer::new(
-            V2::ZERO,
-            column_count(width),
-            COLUMN_WIDTH,
-            GROUND_DEPTH,
-            false,
-            (seed.range(0.0, TAU), seed.range(0.0, TAU)),
-        );
+        let ground = SnowLayer::new(V2::ZERO, column_count(width), COLUMN_WIDTH, GROUND_DEPTH, false, (seed.range(0.0, TAU), seed.range(0.0, TAU)));
         let mut simulation = SnowSimulation {
             width,
             height,
@@ -229,6 +239,9 @@ impl SnowSimulation {
             density: 1.0,
             thaws: false,
             accumulates: true,
+            snowfall_held: false,
+            snowfall_released: false,
+            scattered_until: -10.0,
             layers: vec![ground],
             ids: vec![0],
             dormant: HashMap::new(),
@@ -280,6 +293,16 @@ impl SnowSimulation {
         }
         self.snowfall = snowfall;
         self.update_target();
+    }
+
+    pub fn set_snowfall_held(&mut self, held: bool) {
+        self.snowfall_held = held;
+        self.update_target();
+    }
+
+    /// Whether the held snowfall started by itself since the last call.
+    pub fn take_snowfall_released(&mut self) -> bool {
+        std::mem::take(&mut self.snowfall_released)
     }
 
     /// Scales the snowfall; flakes come and go through the usual cycle, so a change shows gradually.
@@ -340,7 +363,7 @@ impl SnowSimulation {
         // Only a cursor that actually displaces snow needs the full rate; one passing near it or resting in it changes nothing.
         let pushed = air.clock - air.last_window_motion < 0.6 || air.clock - air.last_cursor_push < 0.3;
         // The steady trickle off window corners is a few tiny grains at a time; they read fine at the calm rate.
-        let flying = air.grains.len() > 24;
+        let flying = air.grains.len() > 24 || air.clock < self.scattered_until;
         self.pace = if pushed {
             Pace::Interactive
         } else if flying {
@@ -360,7 +383,8 @@ impl SnowSimulation {
             size: flake.size,
             alpha: flake.alpha,
             soft: flake.soft,
-            tint: [1.0; 3],
+            tint_amount: flake.tint_amount,
+            tint: flake.tint,
             ..Sprite::default()
         });
         let grains = self.air.grains.iter().map(|grain| Sprite {
@@ -376,14 +400,7 @@ impl SnowSimulation {
         let motes = self.air.motes.iter().map(|mote| {
             let t = mote.age / mote.life;
             let fade = (mote.age / 0.06).min(1.0) * (1.0 - t).powf(1.5);
-            Sprite {
-                position: mote.position,
-                size: mote.size * (1.0 + t),
-                alpha: mote.alpha * fade,
-                soft: 1.0,
-                tint: [1.0; 3],
-                ..Sprite::default()
-            }
+            Sprite { position: mote.position, size: mote.size * (1.0 + t), alpha: mote.alpha * fade, soft: 1.0, tint: [1.0; 3], ..Sprite::default() }
         });
         let mut count = 0;
         for (slot, sprite) in buffer.iter_mut().zip(flakes.chain(grains).chain(motes)) {
@@ -415,6 +432,31 @@ impl SnowSimulation {
         result
     }
 
+    /// Turns the pieces into snowflakes that drift down and fade to white; together they leave a small drift.
+    pub fn scatter(&mut self, pieces: &[ScatterPiece]) {
+        self.scattered_until = self.air.clock + 8.0;
+        for piece in pieces {
+            let random = &mut self.air.random;
+            let depth = random.next().powf(0.7);
+            self.air.flakes.push(Flake {
+                position: piece.position,
+                velocity: piece.velocity,
+                fall_speed: 70.0 + depth * 170.0 + random.range(0.0, 40.0),
+                size: 1.8 + depth * 2.6,
+                depth,
+                alpha: 0.5 + depth * 0.45,
+                soft: 0.7 - depth * 0.4,
+                phase: random.range(0.0, PHASE_WRAP),
+                sway_rate: random.range(0.6, 1.8),
+                sway_amount: random.range(8.0, 24.0),
+                settles: true,
+                mass: 0.06,
+                tint: piece.color,
+                tint_amount: 1.0,
+            });
+        }
+    }
+
     // Windows
 
     pub fn space_changed(&mut self) {
@@ -424,7 +466,14 @@ impl SnowSimulation {
         }
     }
 
-    pub fn update_windows(&mut self, surfaces: &[WindowSurface], interval: f32, parked: &HashSet<WindowId>, elsewhere: &HashSet<WindowId>, sliding: bool) {
+    pub fn update_windows(
+        &mut self,
+        surfaces: &[WindowSurface],
+        interval: f32,
+        parked: &HashSet<WindowId>,
+        elsewhere: &HashSet<WindowId>,
+        sliding: bool,
+    ) {
         for li in self.air.held_layers.drain(..) {
             if let Some(layer) = self.layers.get_mut(li) {
                 layer.release_support();
@@ -601,6 +650,9 @@ impl SnowSimulation {
             }
             let sway = (flake.phase.cos() + 0.3 * (flake.phase * 2.3).cos()) * flake.sway_amount;
             let flutter = 1.0 + 0.12 * (flake.phase * 1.3).sin();
+            if flake.tint_amount > 0.0 {
+                flake.tint_amount = (flake.tint_amount - dt * 1.3).max(0.0);
+            }
             let previous_y = flake.position.y;
             flake.position.x += (flake.velocity.x + sway) * dt;
             flake.position.y += flake.velocity.y * flutter * dt;
@@ -613,8 +665,13 @@ impl SnowSimulation {
 
             if flake.settles && self.accumulates {
                 if let Some((li, column)) = landing(&self.layers, flake.position.x, previous_y, flake.position.y) {
+                    if self.snowfall_held && flake.mass < 1.0 && li == 0 {
+                        self.snowfall_held = false;
+                        self.snowfall_released = true;
+                        self.update_target();
+                    }
                     let layer = &mut self.layers[li];
-                    let amount = flake.size * flake.size * DEPOSITION * layer.fill(column);
+                    let amount = flake.size * flake.size * DEPOSITION * flake.mass * layer.fill(column);
                     layer.deposit(amount, flake.position.x, true);
                     self.air.heights_changed = true;
                     self.recycle(i);
@@ -682,6 +739,12 @@ impl SnowSimulation {
 
     /// Wanders between light lulls, steady snow and heavy flurries.
     fn vary(&mut self, dt: f32) {
+        // In case none of the scattered snow makes it to the bottom, say because it all came to rest on windows.
+        if self.snowfall_held && self.scattered_until > 0.0 && self.air.clock > self.scattered_until {
+            self.snowfall_held = false;
+            self.snowfall_released = true;
+            self.update_target();
+        }
         if self.snowfall != Snowfall::Variable {
             self.strength_target = 1.0;
         } else if self.air.clock >= self.next_shift {
@@ -738,7 +801,7 @@ impl SnowSimulation {
     }
 
     fn update_target(&mut self) {
-        let per_megapoint = self.snowfall.flakes_per_megapoint();
+        let per_megapoint = if self.snowfall_held { 0.0 } else { self.snowfall.flakes_per_megapoint() };
         self.target_flakes = (per_megapoint * self.air.strength * self.density * self.width * self.height / 1_000_000.0) as usize;
     }
 }
@@ -860,7 +923,13 @@ impl Air {
         let drive = -acceleration.x;
         let mut slide_velocity = ledge.offset_velocity.x;
         if !(slide_velocity == 0.0 && drive.abs() <= GRIP * pressure) {
-            let direction: f32 = if slide_velocity != 0.0 { slide_velocity.signum() } else if drive > 0.0 { 1.0 } else { -1.0 };
+            let direction: f32 = if slide_velocity != 0.0 {
+                slide_velocity.signum()
+            } else if drive > 0.0 {
+                1.0
+            } else {
+                -1.0
+            };
             let next = slide_velocity + (drive - direction * SLIP * pressure) * dt;
             slide_velocity = if pressure > 0.0 && next * direction <= 0.0 { 0.0 } else { next };
         }
@@ -1170,6 +1239,9 @@ impl Air {
             sway_rate: random.range(0.5, 1.4),
             sway_amount: if near { random.range(10.0, 20.0) } else { random.range(4.0, 9.0) + depth * 10.0 },
             settles: !near,
+            mass: 1.0,
+            tint: [1.0; 3],
+            tint_amount: 0.0,
         }
     }
 

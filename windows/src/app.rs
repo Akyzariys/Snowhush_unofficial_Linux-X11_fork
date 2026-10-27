@@ -5,6 +5,7 @@ use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Power::{POWERBROADCAST_SETTING, RegisterPowerSettingNotification};
 use windows::Win32::System::RemoteDesktop::{NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification};
@@ -20,8 +21,9 @@ use windows::core::{PCWSTR, Result, w};
 
 use crate::log;
 use crate::prefs::{self, Settings};
-use snowhush::simulation::Snowfall;
 use crate::snow::{self, Command, Links};
+use crate::welcome::{self, Handlers};
+use snowhush::simulation::Snowfall;
 
 const CLASS: PCWSTR = w!("SnowhushController");
 const WM_TRAY: u32 = WM_APP + 1;
@@ -33,6 +35,7 @@ const ID_SCREENSHOTS: u32 = 202;
 const ID_LOGIN: u32 = 203;
 const ID_WINDOWS: u32 = 204;
 const ID_QUIT: u32 = 299;
+const TIMER_WELCOME: usize = 1;
 
 const ICONS: [(i32, &[u8]); 8] = [
     (16, include_bytes!("../assets/tray-16.png")),
@@ -66,6 +69,7 @@ thread_local! {
 /// the snow itself runs on its own thread so menus and other modal loops never stall it.
 pub fn run() -> Result<()> {
     unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
         let instance = GetModuleHandleW(None)?;
         let class = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
@@ -87,6 +91,9 @@ pub fn run() -> Result<()> {
         add_tray_icon(window, icon);
         let _ = WTSRegisterSessionNotification(window, NOTIFY_FOR_THIS_SESSION);
         let _ = RegisterPowerSettingNotification(HANDLE(window.0), &GUID_CONSOLE_DISPLAY_STATE, DEVICE_NOTIFY_WINDOW_HANDLE);
+        if !settings.welcomed {
+            SetTimer(Some(window), TIMER_WELCOME, 1200, None);
+        }
         APP.set(Some(App { settings, commands, wake, snow, icon, locked: false, display_off: false, away: false }));
 
         let mut message = MSG::default();
@@ -129,6 +136,35 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
         }
         WM_CLOSE => {
             quit(window);
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == TIMER_WELCOME => {
+            unsafe {
+                let _ = KillTimer(Some(window), TIMER_WELCOME);
+            }
+            welcome::show(Handlers {
+                scatter: Box::new(|pieces| {
+                    APP.with_borrow(|app| {
+                        if let Some(app) = app {
+                            send(app, Command::Scatter(pieces));
+                        }
+                    })
+                }),
+                finished: Box::new(|| {
+                    APP.with_borrow_mut(|app| {
+                        let Some(app) = app else { return };
+                        app.settings.welcomed = true;
+                        app.settings.save();
+                    })
+                }),
+                skipped: Box::new(|| {
+                    APP.with_borrow(|app| {
+                        if let Some(app) = app {
+                            send(app, Command::ReleaseSnowfall);
+                        }
+                    })
+                }),
+            });
             LRESULT(0)
         }
         _ if message != 0 && message == TASKBAR_CREATED.load(Ordering::Relaxed) => {

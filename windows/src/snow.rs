@@ -8,19 +8,28 @@ use windows::Win32::System::Threading::{
     WaitForMultipleObjects,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, MB_ICONERROR, MB_OK, MSG, MWMO_INPUTAVAILABLE, MessageBoxW, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW,
-    PostMessageW, QS_ALLINPUT, TranslateMessage, WM_CLOSE,
+    DispatchMessageW, MB_ICONERROR, MB_OK, MSG, MWMO_INPUTAVAILABLE, MessageBoxW, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostMessageW,
+    QS_ALLINPUT, TranslateMessage, WM_CLOSE,
 };
 use windows::core::{HSTRING, PCWSTR, Result, w};
 
-use snowhush::simulation::{SnowSimulation, Snowfall};
+use snowhush::geometry::V2;
+use snowhush::simulation::{ScatterPiece, SnowSimulation, Snowfall};
 
-use crate::light::daylight;
+use crate::light::{Wallpapers, daylight};
 use crate::log;
 use crate::prefs::Settings;
-use crate::render::{Ambient, Gpu};
-use crate::screen::{Clock, DISPLAYS_CHANGED, Monitor, PowerBudget, Screen, dip_size, monitors};
+use crate::render::Gpu;
+use crate::screen::{BACKDROP_CHANGED, Clock, DISPLAYS_CHANGED, Monitor, PowerBudget, Screen, dip_size, monitors};
 use crate::tracker::Tracker;
+
+/// A piece of the welcome window crumbling into snow, in physical screen pixels.
+pub struct Piece {
+    pub x: f32,
+    pub y: f32,
+    pub velocity: V2,
+    pub color: [f32; 3],
+}
 
 pub enum Command {
     Snowfall(Snowfall),
@@ -30,6 +39,9 @@ pub enum Command {
     ShowInScreenshots(bool),
     /// Off while the screen is locked, asleep or the session is away.
     Active(bool),
+    Scatter(Vec<Piece>),
+    /// Starts the snowfall held back for the welcome window.
+    ReleaseSnowfall,
     Quit,
 }
 
@@ -64,7 +76,8 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
     let started = Clock::now();
     let mut active = true;
     let mut budget = PowerBudget::Full;
-    let mut ambient = Ambient { light: daylight(), shadow_tint: [0.0; 4] };
+    let mut light = daylight();
+    let wallpapers = Wallpapers::new().inspect_err(|error| log!("wallpapers unavailable: {error}")).ok();
     let mut chores_at = 0;
     let mut light_at = 0;
     let mut displays_changed_at = None;
@@ -97,6 +110,20 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                     settings.show_in_screenshots = on;
                     screens.iter().for_each(|screen| screen.show_in_screenshots(on));
                 }
+                Command::Scatter(pieces) => {
+                    let Some(first) = pieces.first() else { continue };
+                    let index = screens.iter().position(|screen| screen.contains(first.x, first.y)).unwrap_or(0);
+                    let Some(screen) = screens.get_mut(index) else { continue };
+                    let local: Vec<ScatterPiece> = pieces
+                        .iter()
+                        .map(|piece| ScatterPiece { position: screen.local(piece.x, piece.y), velocity: piece.velocity, color: piece.color })
+                        .collect();
+                    screen.simulation.scatter(&local);
+                }
+                Command::ReleaseSnowfall => {
+                    settings.welcomed = true;
+                    screens.iter_mut().for_each(|screen| screen.simulation.set_snowfall_held(false));
+                }
                 Command::Active(on) => {
                     if on && !active {
                         screens.iter_mut().for_each(Screen::resume);
@@ -126,6 +153,10 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
             displays_changed_at = None;
             screens = sync_screens(&gpu, &settings, screens);
             clock.refresh();
+            light_at = 0;
+        }
+        if BACKDROP_CHANGED.take() {
+            light_at = 0;
         }
 
         if now >= chores_at {
@@ -141,32 +172,51 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
             screens.iter().for_each(Screen::raise);
             if now >= light_at {
                 light_at = now + clock.frequency * 60;
-                ambient.light = daylight();
+                light = daylight();
+                if let Some(wallpapers) = &wallpapers {
+                    screens.iter_mut().for_each(|screen| screen.update_backdrop(wallpapers));
+                }
             }
         }
 
         if active {
-            if settings.snow_on_windows {
-                // A drag starting is drawn right away instead of at the next calm frame.
-                if tracker.take_started_moving() {
-                    screens.iter_mut().for_each(|screen| screen.wake(now));
-                }
-                if screens.iter().any(|screen| screen.next_due <= now + clock.tolerance()) {
-                    tracker.refresh(&clock, now);
-                }
+            // A drag starting is drawn right away instead of at the next calm frame.
+            if tracker.take_started_moving() && settings.snow_on_windows {
+                screens.iter_mut().for_each(|screen| screen.wake(now));
+            }
+            if screens.iter().any(|screen| screen.next_due <= now + clock.tolerance()) {
+                tracker.refresh(&clock, now);
             }
             let windows = settings.snow_on_windows.then_some(&tracker);
             let time = (clock.seconds(now - started) % 1000.0) as f32;
             let mut lost = false;
+            let mut released = false;
             for screen in screens.iter_mut().filter(|screen| screen.next_due <= now + clock.tolerance()) {
+                let covering = tracker.covering(&screen.monitor.bounds);
+                if covering.is_some() != screen.covered() {
+                    log!("{} {}", screen.monitor.name, covering.map_or("uncovered".to_string(), |class| format!("covered by {class}")));
+                    screen.set_covered(covering.is_some());
+                }
+                if screen.covered() {
+                    screen.next_due = now + clock.frequency / 4;
+                    continue;
+                }
                 let began = Clock::now();
-                match screen.frame(&gpu, &clock, now, budget, ambient, time, windows) {
-                    Ok(drew) => stats.frame(drew, Clock::now() - began, screen.simulation.sprite_count()),
+                match screen.frame(&gpu, &clock, now, budget, light, time, windows) {
+                    Ok(drew) => {
+                        stats.frame(drew, Clock::now() - began, screen.simulation.sprite_count());
+                        released |= screen.simulation.take_snowfall_released();
+                    }
                     Err(error) => {
                         log!("frame failed: {error}");
                         lost = true;
                     }
                 }
+            }
+            // The first display the welcome window's snow reaches starts the snowfall on all of them.
+            if released {
+                settings.welcomed = true;
+                screens.iter_mut().for_each(|screen| screen.simulation.set_snowfall_held(false));
             }
             if lost {
                 screens.clear();
@@ -225,6 +275,7 @@ fn new_simulation(monitor: &Monitor, settings: &Settings) -> SnowSimulation {
     let mut simulation = SnowSimulation::new(width as f32, height as f32, settings.snowfall);
     simulation.thaws = settings.melt;
     simulation.accumulates = settings.accumulate;
+    simulation.set_snowfall_held(!settings.welcomed);
     simulation
 }
 

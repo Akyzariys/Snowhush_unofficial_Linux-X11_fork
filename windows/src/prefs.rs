@@ -20,6 +20,7 @@ pub struct Settings {
     pub melt: bool,
     pub snow_on_windows: bool,
     pub show_in_screenshots: bool,
+    pub welcomed: bool,
 }
 
 impl Settings {
@@ -32,6 +33,7 @@ impl Settings {
             melt: read(w!("meltSnow")).is_none_or(|v| v != 0),
             snow_on_windows: read(w!("snowOnWindows")).is_none_or(|v| v != 0),
             show_in_screenshots: read(w!("showInScreenshots")).is_some_and(|v| v != 0),
+            welcomed: read(w!("welcomed")).is_some_and(|v| v != 0),
         }
     }
 
@@ -42,15 +44,15 @@ impl Settings {
         write(w!("meltSnow"), self.melt as u32);
         write(w!("snowOnWindows"), self.snow_on_windows as u32);
         write(w!("showInScreenshots"), self.show_in_screenshots as u32);
+        write(w!("welcomed"), self.welcomed as u32);
     }
 }
 
 pub fn opens_at_login() -> bool {
     let mut buffer = [0u16; 1024];
     let mut size = (buffer.len() * 2) as u32;
-    let status = unsafe {
-        RegGetValueW(HKEY_CURRENT_USER, RUN, RUN_VALUE, RRF_RT_REG_SZ, None, Some(buffer.as_mut_ptr().cast::<c_void>()), Some(&mut size))
-    };
+    let status =
+        unsafe { RegGetValueW(HKEY_CURRENT_USER, RUN, RUN_VALUE, RRF_RT_REG_SZ, None, Some(buffer.as_mut_ptr().cast::<c_void>()), Some(&mut size)) };
     if status != ERROR_SUCCESS {
         return false;
     }
@@ -77,9 +79,8 @@ fn command() -> Option<Vec<u16>> {
 fn read(name: PCWSTR) -> Option<u32> {
     let mut value = 0u32;
     let mut size = 4u32;
-    let status = unsafe {
-        RegGetValueW(HKEY_CURRENT_USER, KEY, name, RRF_RT_REG_DWORD, None, Some((&raw mut value).cast::<c_void>()), Some(&mut size))
-    };
+    let status =
+        unsafe { RegGetValueW(HKEY_CURRENT_USER, KEY, name, RRF_RT_REG_DWORD, None, Some((&raw mut value).cast::<c_void>()), Some(&mut size)) };
     (status == ERROR_SUCCESS).then_some(value)
 }
 
