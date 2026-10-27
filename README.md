@@ -9,14 +9,16 @@
 <p align="center">
   <a href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush.dmg"><b>Download for macOS</b></a>
   &nbsp;·&nbsp;
+  <a href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush-Setup.exe"><b>Download for Windows</b></a>
+  &nbsp;·&nbsp;
   <a href="https://snowhush.pages.dev">snowhush.pages.dev</a>
   <br>
-  <sub>macOS 14 or later · free and open source</sub>
+  <sub>macOS 14 or later · Windows 10 or 11 · free and open source</sub>
 </p>
 
 https://github.com/user-attachments/assets/d220b1e3-4e87-447f-a934-6ca054defc57
 
-A tiny menu bar app. Soft snow drifts across your screen, settles along the tops of your windows and slips off when you drag them. Sweep the drift aside with your cursor.
+A tiny app that lives in the menu bar on macOS and in the tray on Windows. Soft snow drifts across your screen, settles along the tops of your windows and slips off when you drag them. Sweep the drift aside with your cursor.
 
 ## What the snow does
 
@@ -35,6 +37,7 @@ Everything else lives in the menu bar: Snowfall (Off, Light, Steady, Heavy, Vari
 ```sh
 ./build.sh            # build/Snowhush.app, signed ad hoc
 open build/Snowhush.app
+windows/build.sh      # dist/Snowhush-Setup.exe, cross-compiled from macOS
 ```
 
 ## License

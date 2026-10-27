@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Snowhush · It's snowing on your desktop</title>
-<meta name="description" content="Snowhush is a tiny macOS menu bar app. Soft snow falls over your desktop, settles on your windows and drifts at the bottom of the screen. Sweep it aside with your cursor.">
+<meta name="description" content="Snowhush is a tiny app for macOS and Windows. Soft snow falls over your desktop, settles on your windows and drifts at the bottom of the screen. Sweep it aside with your cursor.">
 <meta property="og:title" content="Snowhush">
 <meta property="og:description" content="It's snowing on your desktop. Snow settles on your windows, slides off when you drag them and parts under your cursor.">
 <meta name="theme-color" content="#17130f">
@@ -126,6 +126,8 @@ body.snow-behind canvas.snow { z-index: 1; }
   margin-top: 40px;
 }
 .meta { color: var(--faint); font-size: 16px; }
+.meta a { color: inherit; text-underline-offset: 3px; text-decoration-color: oklch(0.72 0.02 75 / 0.5); }
+.meta a:hover { color: var(--ink); text-decoration-color: currentColor; }
 
 /* Street */
 
@@ -422,12 +424,12 @@ body.snow-behind canvas.snow { z-index: 1; }
   </nav>
 
   <div class="street-copy">
-    <p class="kicker reveal">Snowhush for macOS</p>
+    <p class="kicker reveal" data-windows-text="Snowhush for Windows">Snowhush for macOS</p>
     <h1 class="display reveal reveal-2"><span>It's snowing</span> <span>on your</span> <span>desktop.</span></h1>
     <p class="lede reveal reveal-3">Soft snow drifts across your screen, settles along the tops of your windows and slips off when you drag them. Sweep the drift aside with your cursor.</p>
     <div class="actions reveal reveal-4">
-      <a class="button" href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush.dmg">Download for macOS</a>
-      <span class="meta">macOS 14 or later · lives in the menu bar</span>
+      <a class="button" href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush.dmg" data-windows-href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush-Setup.exe" data-windows-text="Download for Windows">Download for macOS</a>
+      <span class="meta"><span data-windows-text="Windows 10 or 11 · lives in the tray">macOS 14 or later · lives in the menu bar</span> · <a href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush-Setup.exe" data-windows-href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush.dmg" data-windows-text="also for macOS">also for Windows</a></span>
     </div>
   </div>
 
@@ -522,8 +524,8 @@ body.snow-behind canvas.snow { z-index: 1; }
   <div class="end-inner">
     <h2 class="display">Let it settle.</h2>
     <div class="actions">
-      <a class="button" href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush.dmg">Download for macOS</a>
-      <span class="meta">macOS 14 or later</span>
+      <a class="button" href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush.dmg" data-windows-href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush-Setup.exe" data-windows-text="Download for Windows">Download for macOS</a>
+      <span class="meta"><span data-windows-text="Windows 10 or 11">macOS 14 or later</span> · <a href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush-Setup.exe" data-windows-href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush.dmg" data-windows-text="also for macOS">also for Windows</a></span>
     </div>
     <div class="colophon">
       <span>Snowhush</span>
@@ -533,6 +535,13 @@ body.snow-behind canvas.snow { z-index: 1; }
 </footer>
 
 <div class="grain" aria-hidden="true"></div>
+<script>
+  // Visitors on Windows get its download first; the Mac one stays a link away.
+  if (/Windows/.test(navigator.userAgentData?.platform ?? navigator.userAgent)) {
+    for (const element of document.querySelectorAll('[data-windows-text]')) element.textContent = element.dataset.windowsText;
+    for (const element of document.querySelectorAll('[data-windows-href]')) element.href = element.dataset.windowsHref;
+  }
+</script>
 <script src="snow.js"></script>
 </body>
 </html>
