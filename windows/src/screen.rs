@@ -7,16 +7,18 @@ use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, W
 use windows::Win32::Graphics::Dwm::{DWM_TIMING_INFO, DwmGetCompositionTimingInfo};
 use windows::Win32::Graphics::Gdi::{
     DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
+    ScreenToClient,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::{BOOL, PCWSTR, Result, w};
+use windows::core::{BOOL, Error, PCWSTR, Result, w};
 
 use snowhush::geometry::V2;
 use snowhush::simulation::{Pace, SnowSimulation, WindowId, WindowSurface};
 
+use crate::desktop::DesktopLayer;
 use crate::light::{Backdrop, Wallpapers};
 use crate::log;
 use crate::render::{Ambient, Gpu, Surface};
@@ -147,6 +149,33 @@ impl Clock {
 
 struct Overlay(HWND);
 
+/// A hidden top-level window for the system's broadcasts about displays and the wallpaper,
+/// which overlays behind windows, as child windows, never get.
+pub struct Listener {
+    _window: Overlay,
+}
+
+pub fn listen() -> Result<Listener> {
+    register_class()?;
+    unsafe {
+        let window = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            CLASS,
+            w!("Snowhush"),
+            WS_POPUP,
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            Some(GetModuleHandleW(None)?.into()),
+            None,
+        )?;
+        Ok(Listener { _window: Overlay(window) })
+    }
+}
+
 impl Drop for Overlay {
     fn drop(&mut self) {
         unsafe {
@@ -172,15 +201,24 @@ pub struct Screen {
     covered: bool,
     backdrop: Option<Backdrop>,
     shadow_tint: [f32; 4],
+    layer: Option<DesktopLayer>,
 }
 
 impl Screen {
-    pub fn new(gpu: &Gpu, monitor: Monitor, simulation: SnowSimulation, shown_in_screenshots: bool) -> Result<Screen> {
-        let (physical_width, physical_height) = physical_size(&monitor);
+    /// `layer` puts the snow behind windows, in the desktop's wallpaper layer; without it the snow is on top of everything.
+    /// On failure the simulation comes back, so its snow can go elsewhere.
+    pub fn new(
+        gpu: &Gpu,
+        monitor: Monitor,
+        simulation: SnowSimulation,
+        shown_in_screenshots: bool,
+        layer: Option<DesktopLayer>,
+    ) -> std::result::Result<Screen, (Error, SnowSimulation)> {
         let size = dip_size(&monitor);
-        let overlay = Overlay(create_overlay(&monitor.rect, shown_in_screenshots)?);
-        let scale = (physical_width as f32 / size.0 as f32, physical_height as f32 / size.1 as f32);
-        let surface = Surface::new(gpu, overlay.0, size.0, size.1, scale)?;
+        let (overlay, surface) = match Self::overlay(gpu, &monitor, size, shown_in_screenshots, layer) {
+            Ok(parts) => parts,
+            Err(error) => return Err((error, simulation)),
+        };
         Ok(Screen {
             interactive_rate: monitor.refresh.clamp(60, 120),
             monitor,
@@ -197,7 +235,25 @@ impl Screen {
             covered: false,
             backdrop: None,
             shadow_tint: [0.0; 4],
+            layer,
         })
+    }
+
+    fn overlay(
+        gpu: &Gpu,
+        monitor: &Monitor,
+        size: (u32, u32),
+        shown_in_screenshots: bool,
+        layer: Option<DesktopLayer>,
+    ) -> Result<(Overlay, Surface)> {
+        let overlay = Overlay(match layer {
+            Some(layer) => create_behind(&monitor.rect, &layer)?,
+            None => create_overlay(&monitor.rect, shown_in_screenshots)?,
+        });
+        let (physical_width, physical_height) = physical_size(monitor);
+        let scale = (physical_width as f32 / size.0 as f32, physical_height as f32 / size.1 as f32);
+        let surface = Surface::new(gpu, overlay.0, size.0, size.1, scale)?;
+        Ok((overlay, surface))
     }
 
     /// Steps the snow and draws it if anything visible changed; returns whether it drew.
@@ -311,10 +367,26 @@ impl Screen {
     }
 
     /// Topmost windows opened later stack above; this puts the snow back on top of them.
+    /// Behind windows, the snow is kept just under the desktop icons instead.
     pub fn raise(&self) {
-        unsafe {
-            let _ = SetWindowPos(self.overlay.0, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        let above = match self.layer {
+            Some(layer) => layer.icons,
+            None => Some(HWND_TOPMOST),
+        };
+        if let Some(above) = above {
+            unsafe {
+                let _ = SetWindowPos(self.overlay.0, Some(above), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+            }
         }
+    }
+
+    /// An overlay inside Explorer's wallpaper layer goes away with it when Explorer restarts.
+    pub fn alive(&self) -> bool {
+        unsafe { IsWindow(Some(self.overlay.0)).as_bool() }
+    }
+
+    pub fn behind_windows(&self) -> bool {
+        self.layer.is_some()
     }
 
     /// The pointer in overlay coordinates.
@@ -351,19 +423,9 @@ fn physical_size(monitor: &Monitor) -> (i32, i32) {
 }
 
 fn create_overlay(rect: &RECT, shown_in_screenshots: bool) -> Result<HWND> {
-    static REGISTER: Once = Once::new();
+    register_class()?;
     unsafe {
         let instance = GetModuleHandleW(None)?;
-        REGISTER.call_once(|| {
-            let class = WNDCLASSEXW {
-                cbSize: size_of::<WNDCLASSEXW>() as u32,
-                lpfnWndProc: Some(overlay_procedure),
-                hInstance: instance.into(),
-                lpszClassName: CLASS,
-                ..Default::default()
-            };
-            RegisterClassExW(&class);
-        });
         let window = CreateWindowExW(
             WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             CLASS,
@@ -384,6 +446,50 @@ fn create_overlay(rect: &RECT, shown_in_screenshots: bool) -> Result<HWND> {
         let _ = ShowWindow(window, SW_SHOWNOACTIVATE);
         Ok(window)
     }
+}
+
+/// A child of the wallpaper layer, under the icons, so it needs neither click-through nor a place above other windows.
+/// Screenshots can't leave it out: only top-level windows can be kept from capture.
+fn create_behind(rect: &RECT, layer: &DesktopLayer) -> Result<HWND> {
+    register_class()?;
+    unsafe {
+        let mut origin = POINT { x: rect.left, y: rect.top };
+        let _ = ScreenToClient(layer.parent, &mut origin);
+        let window = CreateWindowExW(
+            WS_EX_NOREDIRECTIONBITMAP | WS_EX_NOACTIVATE,
+            CLASS,
+            w!("Snowhush"),
+            WS_CHILD | WS_VISIBLE | WS_DISABLED,
+            origin.x,
+            origin.y,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+            Some(layer.parent),
+            None,
+            Some(GetModuleHandleW(None)?.into()),
+            None,
+        )?;
+        if let Some(icons) = layer.icons {
+            let _ = SetWindowPos(window, Some(icons), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+        Ok(window)
+    }
+}
+
+fn register_class() -> Result<()> {
+    static REGISTER: Once = Once::new();
+    let instance = unsafe { GetModuleHandleW(None)? };
+    REGISTER.call_once(|| {
+        let class = WNDCLASSEXW {
+            cbSize: size_of::<WNDCLASSEXW>() as u32,
+            lpfnWndProc: Some(overlay_procedure),
+            hInstance: instance.into(),
+            lpszClassName: CLASS,
+            ..Default::default()
+        };
+        unsafe { RegisterClassExW(&class) };
+    });
+    Ok(())
 }
 
 fn set_capture(window: HWND, shown: bool) {

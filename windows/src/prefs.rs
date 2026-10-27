@@ -19,6 +19,7 @@ pub struct Settings {
     pub accumulate: bool,
     pub melt: bool,
     pub snow_on_windows: bool,
+    pub behind_windows: bool,
     pub show_in_screenshots: bool,
     pub welcomed: bool,
 }
@@ -32,6 +33,7 @@ impl Settings {
             accumulate: read(w!("accumulate")).is_none_or(|v| v != 0),
             melt: read(w!("meltSnow")).is_none_or(|v| v != 0),
             snow_on_windows: read(w!("snowOnWindows")).is_none_or(|v| v != 0),
+            behind_windows: read(w!("behindWindows")).is_some_and(|v| v != 0),
             show_in_screenshots: read(w!("showInScreenshots")).is_some_and(|v| v != 0),
             welcomed: read(w!("welcomed")).is_some_and(|v| v != 0),
         }
@@ -43,6 +45,7 @@ impl Settings {
         write(w!("accumulate"), self.accumulate as u32);
         write(w!("meltSnow"), self.melt as u32);
         write(w!("snowOnWindows"), self.snow_on_windows as u32);
+        write(w!("behindWindows"), self.behind_windows as u32);
         write(w!("showInScreenshots"), self.show_in_screenshots as u32);
         write(w!("welcomed"), self.welcomed as u32);
     }

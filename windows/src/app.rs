@@ -34,6 +34,7 @@ const ID_MELT: u32 = 201;
 const ID_SCREENSHOTS: u32 = 202;
 const ID_LOGIN: u32 = 203;
 const ID_WINDOWS: u32 = 204;
+const ID_BEHIND: u32 = 205;
 const ID_QUIT: u32 = 299;
 const TIMER_WELCOME: usize = 1;
 
@@ -168,9 +169,12 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
             LRESULT(0)
         }
         _ if message != 0 && message == TASKBAR_CREATED.load(Ordering::Relaxed) => {
-            if let Some(icon) = APP.with_borrow(|app| app.as_ref().map(|app| app.icon)) {
-                add_tray_icon(window, icon);
-            }
+            APP.with_borrow(|app| {
+                if let Some(app) = app {
+                    add_tray_icon(window, app.icon);
+                    send(app, Command::ShellRestarted);
+                }
+            });
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
@@ -212,8 +216,10 @@ fn show_menu(window: HWND, x: i32, y: i32) {
         let _ = AppendMenuW(menu, MF_STRING | checked(settings.accumulate), ID_ACCUMULATE as usize, w!("Accumulate"));
         let melt = MF_STRING | checked(settings.melt) | if settings.accumulate { MF_ENABLED } else { MF_GRAYED };
         let _ = AppendMenuW(menu, melt, ID_MELT as usize, w!("Melt Snow"));
-        let _ = AppendMenuW(menu, MF_STRING | checked(settings.snow_on_windows), ID_WINDOWS as usize, w!("Snow on Windows"));
+        let windows = MF_STRING | checked(settings.snow_on_windows) | if settings.behind_windows { MF_GRAYED } else { MF_ENABLED };
+        let _ = AppendMenuW(menu, windows, ID_WINDOWS as usize, w!("Snow on Windows"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(menu, MF_STRING | checked(settings.behind_windows), ID_BEHIND as usize, w!("Behind Windows"));
         let _ = AppendMenuW(menu, MF_STRING | checked(settings.show_in_screenshots), ID_SCREENSHOTS as usize, w!("Show in Screenshots"));
         let _ = AppendMenuW(menu, MF_STRING | checked(login), ID_LOGIN as usize, w!("Open at Login"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
@@ -252,6 +258,10 @@ fn choose(window: HWND, chosen: u32, login: bool) {
                 ID_WINDOWS => {
                     settings.snow_on_windows = !settings.snow_on_windows;
                     Command::SnowOnWindows(settings.snow_on_windows)
+                }
+                ID_BEHIND => {
+                    settings.behind_windows = !settings.behind_windows;
+                    Command::BehindWindows(settings.behind_windows)
                 }
                 ID_SCREENSHOTS => {
                     settings.show_in_screenshots = !settings.show_in_screenshots;
