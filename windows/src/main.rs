@@ -1,0 +1,29 @@
+#![windows_subsystem = "windows"]
+
+mod app;
+mod light;
+mod log;
+mod prefs;
+mod render;
+mod screen;
+mod snow;
+
+use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
+use windows::core::w;
+
+fn main() {
+    unsafe {
+        let _instance = CreateMutexW(None, true, w!("Local\\Snowhush"));
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            return;
+        }
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+    log::start();
+    log!("Snowhush {}", env!("CARGO_PKG_VERSION"));
+    if let Err(error) = app::run() {
+        log!("failed: {error}");
+    }
+}
