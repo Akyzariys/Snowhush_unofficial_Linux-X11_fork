@@ -118,16 +118,18 @@ body.snow-behind canvas.snow { z-index: 1; }
   transition: transform 0.5s var(--ease-out), background-color 0.3s var(--ease-out);
 }
 .button:hover { transform: translateY(-2px); background: oklch(0.97 0.03 82); }
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 14px 24px;
-  margin-top: 40px;
+.button svg { flex: none; width: 15px; height: 15px; margin-right: 12px; fill: currentColor; }
+.button[data-platform="mac"] svg { margin-top: -3px; }
+.button.secondary {
+  background: transparent;
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px oklch(0.93 0.02 80 / 0.4);
 }
-.meta { color: var(--faint); font-size: 16px; }
-.meta a { color: inherit; text-underline-offset: 3px; text-decoration-color: oklch(0.72 0.02 75 / 0.5); }
-.meta a:hover { color: var(--ink); text-decoration-color: currentColor; }
+.button.secondary:hover { background: oklch(0.93 0.02 80 / 0.06); box-shadow: inset 0 0 0 1px oklch(0.93 0.02 80 / 0.8); }
+.actions { margin-top: 40px; }
+.downloads { display: flex; flex-wrap: wrap; gap: 12px; }
+.meta { margin: 18px 0 0; color: var(--faint); font-size: 16px; }
+@media (max-width: 560px) { .downloads .button { flex: 1 1 100%; } }
 
 /* Street */
 
@@ -424,12 +426,15 @@ body.snow-behind canvas.snow { z-index: 1; }
   </nav>
 
   <div class="street-copy">
-    <p class="kicker reveal" data-windows-text="Snowhush for Windows">Snowhush for macOS</p>
+    <p class="kicker reveal">Snowhush for macOS and Windows</p>
     <h1 class="display reveal reveal-2"><span>It's snowing</span> <span>on your</span> <span>desktop.</span></h1>
     <p class="lede reveal reveal-3">Soft snow drifts across your screen, settles along the tops of your windows and slips off when you drag them. Sweep the drift aside with your cursor.</p>
     <div class="actions reveal reveal-4">
-      <a class="button" href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush.dmg" data-windows-href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush-Setup.exe" data-windows-text="Download for Windows">Download for macOS</a>
-      <span class="meta"><span data-windows-text="Windows 10 or 11 · lives in the tray">macOS 14 or later · lives in the menu bar</span> · <a href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush-Setup.exe" data-windows-href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush.dmg" data-windows-text="also for macOS">also for Windows</a></span>
+      <div class="downloads">
+        <a class="button" href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush.dmg" data-platform="mac"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>Download for macOS</a>
+        <a class="button secondary" href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush-Setup.exe" data-platform="windows"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M0 0h11.4v11.4H0zM12.6 0H24v11.4H12.6zM0 12.6h11.4V24H0zM12.6 12.6H24V24H12.6z"/></svg>Download for Windows</a>
+      </div>
+      <p class="meta">macOS 14 or later · Windows 10 or 11</p>
     </div>
   </div>
 
@@ -524,8 +529,11 @@ body.snow-behind canvas.snow { z-index: 1; }
   <div class="end-inner">
     <h2 class="display">Let it settle.</h2>
     <div class="actions">
-      <a class="button" href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush.dmg" data-windows-href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush-Setup.exe" data-windows-text="Download for Windows">Download for macOS</a>
-      <span class="meta"><span data-windows-text="Windows 10 or 11">macOS 14 or later</span> · <a href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush-Setup.exe" data-windows-href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush.dmg" data-windows-text="also for macOS">also for Windows</a></span>
+      <div class="downloads">
+        <a class="button" href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush.dmg" data-platform="mac"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>Download for macOS</a>
+        <a class="button secondary" href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush-Setup.exe" data-platform="windows"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M0 0h11.4v11.4H0zM12.6 0H24v11.4H12.6zM0 12.6h11.4V24H0zM12.6 12.6H24V24H12.6z"/></svg>Download for Windows</a>
+      </div>
+      <p class="meta">macOS 14 or later · Windows 10 or 11</p>
     </div>
     <div class="colophon">
       <span>Snowhush</span>
@@ -536,10 +544,14 @@ body.snow-behind canvas.snow { z-index: 1; }
 
 <div class="grain" aria-hidden="true"></div>
 <script>
-  // Visitors on Windows get its download first; the Mac one stays a link away.
+  // Visitors on Windows get its download first and filled in; everyone else gets the Mac's.
   if (/Windows/.test(navigator.userAgentData?.platform ?? navigator.userAgent)) {
-    for (const element of document.querySelectorAll('[data-windows-text]')) element.textContent = element.dataset.windowsText;
-    for (const element of document.querySelectorAll('[data-windows-href]')) element.href = element.dataset.windowsHref;
+    for (const downloads of document.querySelectorAll('.downloads')) {
+      const [mac, windows] = ['mac', 'windows'].map(platform => downloads.querySelector(`[data-platform="${platform}"]`));
+      downloads.prepend(windows);
+      windows.classList.remove('secondary');
+      mac.classList.add('secondary');
+    }
   }
 </script>
 <script src="snow.js"></script>
