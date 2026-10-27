@@ -31,6 +31,7 @@ const ID_ACCUMULATE: u32 = 200;
 const ID_MELT: u32 = 201;
 const ID_SCREENSHOTS: u32 = 202;
 const ID_LOGIN: u32 = 203;
+const ID_WINDOWS: u32 = 204;
 const ID_QUIT: u32 = 299;
 
 const ICONS: [(i32, &[u8]); 8] = [
@@ -175,6 +176,7 @@ fn show_menu(window: HWND, x: i32, y: i32) {
         let _ = AppendMenuW(menu, MF_STRING | checked(settings.accumulate), ID_ACCUMULATE as usize, w!("Accumulate"));
         let melt = MF_STRING | checked(settings.melt) | if settings.accumulate { MF_ENABLED } else { MF_GRAYED };
         let _ = AppendMenuW(menu, melt, ID_MELT as usize, w!("Melt Snow"));
+        let _ = AppendMenuW(menu, MF_STRING | checked(settings.snow_on_windows), ID_WINDOWS as usize, w!("Snow on Windows"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING | checked(settings.show_in_screenshots), ID_SCREENSHOTS as usize, w!("Show in Screenshots"));
         let _ = AppendMenuW(menu, MF_STRING | checked(login), ID_LOGIN as usize, w!("Open at Login"));
@@ -210,6 +212,10 @@ fn choose(window: HWND, chosen: u32, login: bool) {
                 ID_MELT => {
                     settings.melt = !settings.melt;
                     Command::Melt(settings.melt)
+                }
+                ID_WINDOWS => {
+                    settings.snow_on_windows = !settings.snow_on_windows;
+                    Command::SnowOnWindows(settings.snow_on_windows)
                 }
                 ID_SCREENSHOTS => {
                     settings.show_in_screenshots = !settings.show_in_screenshots;

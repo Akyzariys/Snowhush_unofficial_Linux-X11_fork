@@ -1,9 +1,11 @@
 use std::sync::mpsc::Receiver;
 
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, WPARAM};
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::Threading::{
     CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, CreateWaitableTimerW, INFINITE, SetWaitableTimer, TIMER_ALL_ACCESS,
+    WaitForMultipleObjects,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, MB_ICONERROR, MB_OK, MSG, MWMO_INPUTAVAILABLE, MessageBoxW, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW,
@@ -11,17 +13,20 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{HSTRING, PCWSTR, Result, w};
 
+use snowhush::simulation::{SnowSimulation, Snowfall};
+
 use crate::light::daylight;
 use crate::log;
 use crate::prefs::Settings;
 use crate::render::{Ambient, Gpu};
 use crate::screen::{Clock, DISPLAYS_CHANGED, Monitor, PowerBudget, Screen, dip_size, monitors};
-use snowhush::simulation::{Snowfall, SnowSimulation};
+use crate::tracker::Tracker;
 
 pub enum Command {
     Snowfall(Snowfall),
     Accumulate(bool),
     Melt(bool),
+    SnowOnWindows(bool),
     ShowInScreenshots(bool),
     /// Off while the screen is locked, asleep or the session is away.
     Active(bool),
@@ -46,6 +51,7 @@ pub fn run(commands: Receiver<Command>, links: Links, settings: Settings) {
 }
 
 fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings) -> Result<()> {
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()? };
     let mut gpu = Gpu::new()?;
     log!("adapter: {}", gpu.adapter);
     let mut screens = sync_screens(&gpu, &settings, Vec::new());
@@ -63,6 +69,7 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
     let mut light_at = 0;
     let mut displays_changed_at = None;
     let mut stats = Stats::new(started);
+    let mut tracker = Tracker::new();
 
     loop {
         while let Ok(command) = commands.try_recv() {
@@ -79,6 +86,12 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                 Command::Melt(on) => {
                     settings.melt = on;
                     screens.iter_mut().for_each(|screen| screen.simulation.thaws = on);
+                }
+                Command::SnowOnWindows(on) => {
+                    settings.snow_on_windows = on;
+                    if !on {
+                        screens.iter_mut().for_each(Screen::drop_window_snow);
+                    }
                 }
                 Command::ShowInScreenshots(on) => {
                     settings.show_in_screenshots = on;
@@ -133,11 +146,21 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
         }
 
         if active {
+            if settings.snow_on_windows {
+                // A drag starting is drawn right away instead of at the next calm frame.
+                if tracker.take_started_moving() {
+                    screens.iter_mut().for_each(|screen| screen.wake(now));
+                }
+                if screens.iter().any(|screen| screen.next_due <= now + clock.tolerance()) {
+                    tracker.refresh(&clock, now);
+                }
+            }
+            let windows = settings.snow_on_windows.then_some(&tracker);
             let time = (clock.seconds(now - started) % 1000.0) as f32;
             let mut lost = false;
             for screen in screens.iter_mut().filter(|screen| screen.next_due <= now + clock.tolerance()) {
                 let began = Clock::now();
-                match screen.frame(&gpu, &clock, now, budget, ambient, time) {
+                match screen.frame(&gpu, &clock, now, budget, ambient, time, windows) {
                     Ok(drew) => stats.frame(drew, Clock::now() - began, screen.simulation.sprite_count()),
                     Err(error) => {
                         log!("frame failed: {error}");
@@ -151,7 +174,7 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
                 screens = sync_screens(&gpu, &settings, Vec::new());
             }
             now = Clock::now();
-            stats.report(&clock, now);
+            stats.report(&clock, now, &mut tracker);
         }
 
         let due = screens.iter().map(|screen| screen.next_due).min().filter(|_| active);
@@ -159,7 +182,9 @@ fn run_loop(commands: &Receiver<Command>, links: &Links, mut settings: Settings)
             if let Some(due) = due {
                 let wait = -(((due - now).max(0) as i128 * 10_000_000) / clock.frequency as i128) as i64;
                 let _ = SetWaitableTimer(timer, &wait, 0, None, None, false);
-                MsgWaitForMultipleObjectsEx(Some(&[wake, timer]), INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                // Messages wait for the next frame: window reports arrive with every mouse move,
+                // and waking for each would cost more than the snow.
+                WaitForMultipleObjects(&[wake, timer], false, INFINITE);
             } else {
                 MsgWaitForMultipleObjectsEx(Some(&[wake]), INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
             }
@@ -238,20 +263,25 @@ impl Stats {
         self.sprites = self.sprites.max(sprites);
     }
 
-    fn report(&mut self, clock: &Clock, now: i64) {
+    fn report(&mut self, clock: &Clock, now: i64, tracker: &mut Tracker) {
         let elapsed = clock.seconds(now - self.since);
         if elapsed < 30.0 {
             return;
         }
         let busy = clock.seconds(self.busy);
+        let listing = clock.seconds(tracker.cost);
         log!(
-            "frames: {:.1} steps/s, {:.1} draws/s, {:.0} µs per step, {:.2}% of a core, up to {} sprites",
+            "frames: {:.1} steps/s, {:.1} draws/s, {:.0} µs per step, {:.2}% of a core, up to {} sprites; windows: {:.1} reads/s, {:.0} µs per read",
             self.steps as f64 / elapsed,
             self.draws as f64 / elapsed,
             busy * 1e6 / self.steps.max(1) as f64,
-            busy / elapsed * 100.0,
-            self.sprites
+            (busy + listing) / elapsed * 100.0,
+            self.sprites,
+            tracker.listings as f64 / elapsed,
+            listing * 1e6 / tracker.listings.max(1) as f64
         );
         *self = Stats::new(now);
+        tracker.listings = 0;
+        tracker.cost = 0;
     }
 }

@@ -104,6 +104,7 @@ pub struct PileLayer<'a> {
     pub occluders: &'a [[f32; 4]],
 }
 
+#[derive(PartialEq)]
 pub struct WindowSurface {
     pub id: WindowId,
     pub frame: Rect,

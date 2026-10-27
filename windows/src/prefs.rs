@@ -18,6 +18,7 @@ pub struct Settings {
     pub snowfall: Snowfall,
     pub accumulate: bool,
     pub melt: bool,
+    pub snow_on_windows: bool,
     pub show_in_screenshots: bool,
 }
 
@@ -29,6 +30,7 @@ impl Settings {
             snowfall: snowfall.unwrap_or(if calm { Snowfall::Light } else { Snowfall::Steady }),
             accumulate: read(w!("accumulate")).is_none_or(|v| v != 0),
             melt: read(w!("meltSnow")).is_none_or(|v| v != 0),
+            snow_on_windows: read(w!("snowOnWindows")).is_none_or(|v| v != 0),
             show_in_screenshots: read(w!("showInScreenshots")).is_some_and(|v| v != 0),
         }
     }
@@ -38,6 +40,7 @@ impl Settings {
         write(w!("snowfall"), snowfall as u32);
         write(w!("accumulate"), self.accumulate as u32);
         write(w!("meltSnow"), self.melt as u32);
+        write(w!("snowOnWindows"), self.snow_on_windows as u32);
         write(w!("showInScreenshots"), self.show_in_screenshots as u32);
     }
 }

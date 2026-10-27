@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::collections::HashSet;
 use std::mem::size_of;
 use std::sync::Once;
 
@@ -14,8 +15,10 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, PCWSTR, Result, w};
 
 use snowhush::geometry::V2;
+use snowhush::simulation::{Pace, SnowSimulation, WindowId, WindowSurface};
+
 use crate::render::{Ambient, Gpu, Surface};
-use snowhush::simulation::{Pace, SnowSimulation};
+use crate::tracker::Tracker;
 
 const CLASS: PCWSTR = w!("SnowhushOverlay");
 
@@ -151,6 +154,9 @@ pub struct Screen {
     last_step: i64,
     idle_frames: u32,
     interactive_rate: u32,
+    surfaces: Vec<WindowSurface>,
+    windows_seen: u64,
+    windows_changed_at: i64,
 }
 
 impl Screen {
@@ -170,13 +176,20 @@ impl Screen {
             size,
             last_step: 0,
             idle_frames: 0,
+            surfaces: Vec::new(),
+            windows_seen: 0,
+            windows_changed_at: 0,
         })
     }
 
     /// Steps the snow and draws it if anything visible changed; returns whether it drew.
-    pub fn frame(&mut self, gpu: &Gpu, clock: &Clock, now: i64, budget: PowerBudget, ambient: Ambient, time: f32) -> Result<bool> {
+    /// `windows` is left out while snow on windows is off.
+    pub fn frame(&mut self, gpu: &Gpu, clock: &Clock, now: i64, budget: PowerBudget, ambient: Ambient, time: f32, windows: Option<&Tracker>) -> Result<bool> {
         let dt = if self.last_step == 0 { 1.0 / 60.0 } else { clock.seconds(now - self.last_step).min(0.05) as f32 };
         self.last_step = now;
+        if let Some(tracker) = windows {
+            self.follow(tracker, clock, now);
+        }
         let changed = self.simulation.step(dt, self.cursor());
 
         let fastest = if budget == PowerBudget::Full { self.interactive_rate } else { self.interactive_rate.min(60) };
@@ -195,6 +208,41 @@ impl Screen {
         }
         self.surface.draw(gpu, &self.simulation, ambient, time)?;
         Ok(true)
+    }
+
+    /// Hands the simulation the windows on this display when they changed.
+    fn follow(&mut self, tracker: &Tracker, clock: &Clock, now: i64) {
+        if tracker.generation == self.windows_seen {
+            return;
+        }
+        self.windows_seen = tracker.generation;
+        let surfaces = tracker.surfaces(&self.monitor.rect, self.size);
+        if surfaces == self.surfaces {
+            return;
+        }
+        let since = clock.seconds(now - self.windows_changed_at) as f32;
+        // A window that moves outside a drag, as when it is maximized or snapped, jumps there in one go:
+        // its snow is left behind instead of being carried along.
+        let interval = if tracker.moving() || since < 0.1 { since.min(0.25) } else { 1.0 / 60.0 };
+        let elsewhere: HashSet<WindowId> = self
+            .surfaces
+            .iter()
+            .map(|surface| surface.id)
+            .filter(|&id| !surfaces.iter().any(|surface| surface.id == id) && tracker.elsewhere(id))
+            .collect();
+        self.simulation.update_windows(&surfaces, interval, &HashSet::new(), &elsewhere, false);
+        self.surfaces = surfaces;
+        self.windows_changed_at = now;
+    }
+
+    pub fn drop_window_snow(&mut self) {
+        self.simulation.update_windows(&[], 0.1, &HashSet::new(), &HashSet::new(), false);
+        self.surfaces.clear();
+        self.windows_seen = 0;
+    }
+
+    pub fn wake(&mut self, now: i64) {
+        self.next_due = self.next_due.min(now);
     }
 
     pub fn resume(&mut self) {
