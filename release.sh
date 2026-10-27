@@ -7,7 +7,7 @@
 #
 # Usage: ./release.sh <version> [notes]
 # Needs: a "Developer ID Application" identity, a notarytool keychain profile (NOTARY_PROFILE, default "snowhush"),
-# the Sparkle EdDSA key in the login keychain, gh signed in, and for Windows cargo-xwin and makensis.
+# the Sparkle EdDSA key in the login keychain, gh signed in, and cargo-xwin for Windows.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -26,8 +26,7 @@ export IDENTITY=${IDENTITY:-$(security find-identity -v -p codesigning | awk -F'
 [[ -z "$(git status --porcelain)" ]] || { echo "Commit or stash your changes first." >&2; exit 1; }
 xcrun notarytool history --keychain-profile "$profile" >/dev/null 2>&1 \
     || { echo "No notarytool profile \"$profile\". Create it with: xcrun notarytool store-credentials $profile" >&2; exit 1; }
-command -v cargo-xwin >/dev/null && command -v makensis >/dev/null \
-    || { echo "The Windows build needs cargo-xwin and makensis: cargo install cargo-xwin; brew install makensis" >&2; exit 1; }
+command -v cargo-xwin >/dev/null || { echo "The Windows build needs cargo-xwin: cargo install cargo-xwin" >&2; exit 1; }
 
 if [[ ! -x "$dmgbuild" ]]; then
     python3 -m venv .build/dmgbuild

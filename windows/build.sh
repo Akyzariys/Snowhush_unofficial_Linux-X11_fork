@@ -1,16 +1,17 @@
 #!/bin/zsh
 # Builds the Windows app and its installer on macOS, into dist/Snowhush-Setup.exe or the folder given.
-# Needs: rustup target add x86_64-pc-windows-msvc, cargo install cargo-xwin, brew install makensis.
+# The installer carries the app, so the app is built first and handed to it.
+# Needs: rustup target add x86_64-pc-windows-msvc, cargo install cargo-xwin.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 out=${1:-../dist}
 out=${out:A}
-version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
-exe=target/x86_64-pc-windows-msvc/release/Snowhush.exe
+target=x86_64-pc-windows-msvc
+release=$PWD/target/$target/release
 
-cargo xwin build --release --target x86_64-pc-windows-msvc
+cargo xwin build --release --target $target --bin Snowhush
+SNOWHUSH_APP=$release/Snowhush.exe cargo xwin build --release --target $target --bin Snowhush-Setup --features setup
 mkdir -p "$out"
-size=$(( ($(stat -f%z "$exe") + 1023) / 1024 ))
-makensis -V2 -DVERSION="$version" -DEXE="$exe" -DSIZE="$size" -DOUTFILE="$out/Snowhush-Setup.exe" installer.nsi
+cp "$release/Snowhush-Setup.exe" "$out/Snowhush-Setup.exe"
 echo "$out/Snowhush-Setup.exe"

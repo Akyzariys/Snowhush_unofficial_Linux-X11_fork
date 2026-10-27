@@ -11,11 +11,11 @@ One-time setup on the release machine:
 - a "Developer ID Application" certificate in the keychain;
 - a notarytool profile: `xcrun notarytool store-credentials snowhush --apple-id <apple-id> --team-id <team-id>`;
 - the Sparkle EdDSA private key in the login keychain (`.build/sparkle-tools/bin/generate_keys`); its public key is `SUPublicEDKey` in `Resources/Info.plist`;
-- for Windows: `rustup target add x86_64-pc-windows-msvc`, `cargo install cargo-xwin` and `brew install makensis`.
+- for Windows: `rustup target add x86_64-pc-windows-msvc` and `cargo install cargo-xwin`.
 
 ## Windows
 
-`windows/` is the Windows app in Rust, cross-compiled from the Mac. `windows/build.sh` builds it and its per-user NSIS installer into `dist/Snowhush-Setup.exe`; `cd windows && cargo test --lib` runs the simulation tests natively. The installer is unsigned, so SmartScreen may warn before running it.
+`windows/` is the Windows app in Rust, cross-compiled from the Mac. `windows/build.sh` builds it and its installer, which carries the app, into `dist/Snowhush-Setup.exe`. The installer works per user, without administrator rights, and `Snowhush.exe --uninstall` removes it again; `cd windows && cargo test --lib` runs the simulation tests natively. The installer is unsigned, so SmartScreen may warn before running it.
 
 ## Site
 

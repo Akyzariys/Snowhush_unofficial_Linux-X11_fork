@@ -18,6 +18,11 @@ use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetP
 use windows::core::w;
 
 fn main() {
+    // What "Uninstall" in Settings runs; it removes everything, even with Snowhush still running.
+    if std::env::args().skip(1).any(|argument| argument == "--uninstall") {
+        snowhush::install::uninstall();
+        return;
+    }
     unsafe {
         let _instance = CreateMutexW(None, true, w!("Local\\Snowhush"));
         if GetLastError() == ERROR_ALREADY_EXISTS {

@@ -17,16 +17,19 @@ fn main() {
         return;
     }
     let version = env!("CARGO_PKG_VERSION");
-    // A .res file opens with an empty entry.
-    let mut res = vec![0, 0, 0, 0, 32, 0, 0, 0, 0xFF, 0xFF, 0, 0, 0xFF, 0xFF, 0, 0];
-    res.extend([0; 16]);
-    icon(&mut res, &std::fs::read(ICON).expect("icon"));
-    entry(&mut res, RT_VERSION, 1, ENGLISH, &version_info(version));
-    entry(&mut res, RT_MANIFEST, 1, ENGLISH, manifest(version).as_bytes());
+    let icon_file = std::fs::read(ICON).expect("icon");
+    for (binary, description) in [("Snowhush", "Snowhush"), ("Snowhush-Setup", "Snowhush Setup")] {
+        // A .res file opens with an empty entry.
+        let mut res = vec![0, 0, 0, 0, 32, 0, 0, 0, 0xFF, 0xFF, 0, 0, 0xFF, 0xFF, 0, 0];
+        res.extend([0; 16]);
+        icon(&mut res, &icon_file);
+        entry(&mut res, RT_VERSION, 1, ENGLISH, &version_info(version, description, &format!("{binary}.exe")));
+        entry(&mut res, RT_MANIFEST, 1, ENGLISH, manifest(version).as_bytes());
 
-    let path = Path::new(&std::env::var("OUT_DIR").unwrap()).join("resources.res");
-    std::fs::write(&path, res).expect("resources");
-    println!("cargo:rustc-link-arg-bins={}", path.display());
+        let path = Path::new(&std::env::var("OUT_DIR").unwrap()).join(format!("{binary}.res"));
+        std::fs::write(&path, res).expect("resources");
+        println!("cargo:rustc-link-arg-bin={binary}={}", path.display());
+    }
 }
 
 /// One resource: a header naming its type and id, then the data, padded to a 32-bit boundary.
@@ -60,7 +63,7 @@ fn icon(res: &mut Vec<u8>, file: &[u8]) {
     entry(res, RT_GROUP_ICON, 1, ENGLISH, &group);
 }
 
-fn version_info(version: &str) -> Vec<u8> {
+fn version_info(version: &str, description: &str, filename: &str) -> Vec<u8> {
     let parts: Vec<u32> = version.split('.').map(|part| part.parse().unwrap_or(0)).chain([0; 4]).take(4).collect();
     let (high, low) = (parts[0] << 16 | parts[1], parts[2] << 16 | parts[3]);
     let mut fixed = Vec::new();
@@ -69,11 +72,11 @@ fn version_info(version: &str) -> Vec<u8> {
     }
     let strings = [
         ("CompanyName", "Mykhailo Bezruchko"),
-        ("FileDescription", "Snowhush"),
+        ("FileDescription", description),
         ("FileVersion", version),
         ("InternalName", "Snowhush"),
         ("LegalCopyright", "© 2026 Mykhailo Bezruchko"),
-        ("OriginalFilename", "Snowhush.exe"),
+        ("OriginalFilename", filename),
         ("ProductName", "Snowhush"),
         ("ProductVersion", version),
     ]

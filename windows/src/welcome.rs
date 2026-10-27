@@ -1,58 +1,24 @@
 use std::cell::RefCell;
-use std::mem::size_of;
 use std::rc::Rc;
 use std::sync::Once;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
-use windows::Win32::Graphics::Direct2D::Common::{D2D_RECT_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT};
-use windows::Win32::Graphics::Direct2D::{
-    D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
-    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
-    D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, D2D1CreateFactory, ID2D1Factory, ID2D1RenderTarget,
-};
-use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH, DWRITE_FONT_STRETCH_CONDENSED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-    DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_LIGHT, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_LINE_SPACING_METHOD_UNIFORM,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE, DWriteCreateFactory, IDWriteFactory,
-    IDWriteTextLayout, IDWriteTextLayout1,
-};
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
-use windows::Win32::Graphics::Gdi::{
-    AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC,
-    DeleteObject, GetDC, GetMonitorInfoW, HGDIOBJ, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint, ReleaseDC, SelectObject,
-};
-use windows::Win32::Graphics::Imaging::{
-    CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICBitmapSource, IWICImagingFactory, WICBitmapCacheOnLoad, WICBitmapDitherTypeNone,
-    WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnDemand,
-};
-use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, VK_ESCAPE, VK_RETURN};
-use windows::Win32::UI::Shell::SHCreateMemStream;
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::{Error, Interface, PCWSTR, Result, w};
-use windows_numerics::Vector2;
+use windows::core::{PCWSTR, Result, w};
 
+use snowhush::card::{self, Card, Content, Hits, MARGIN};
 use snowhush::geometry::V2;
 
 use crate::log;
 use crate::snow::Piece;
 
 const CLASS: PCWSTR = w!("SnowhushWelcome");
-const ICON: &[u8] = include_bytes!("../assets/icon-256.png");
 const WIDTH: f32 = 440.0;
 const HEIGHT: f32 = 430.0;
-/// Room around the card for its shadow.
-const MARGIN: f32 = 36.0;
-const BACKGROUND: [f32; 3] = [0.105, 0.088, 0.072];
-const INK: [f32; 3] = [0.93, 0.9, 0.85];
-const MUTED: [f32; 3] = [0.78, 0.75, 0.7];
-const LABEL: [f32; 3] = [0.09, 0.075, 0.06];
 const TITLE: &str = "IT'S SNOWING\nON YOUR DESKTOP.";
 const BODY: &str = "Snowhush lives in the system tray. Click its icon to change the snowfall, let the drift melt, or keep the snow off your windows. Sweep it aside with your cursor.";
-const BUTTON: &str = "GET STARTED";
 /// Spacing of the pieces that fly off.
 const CELL: f32 = 6.0;
 /// Spacing of the crumbling front: fine enough that its edge reads as a line, not as squares.
@@ -76,10 +42,8 @@ thread_local! {
 
 struct Welcome {
     window: HWND,
-    scale: f32,
-    /// The bitmap's size in physical pixels, shadow included.
-    size: (i32, i32),
-    painter: Painter,
+    card: Card,
+    hits: Hits,
     pressed: bool,
     /// The mouse went down on the button and hasn't come up yet.
     holding: bool,
@@ -128,62 +92,43 @@ pub fn show(handlers: Handlers) {
 
 fn open() -> Result<()> {
     static REGISTER: Once = Once::new();
+    REGISTER.call_once(|| {
+        let _ = card::register(CLASS, Some(procedure));
+    });
+    let (scale, origin) = card::placement(WIDTH, HEIGHT);
+    let card = Card::new(WIDTH, HEIGHT, scale)?;
+    let (pixels, hits) = card.paint(&content(false))?;
     unsafe {
-        let instance = GetModuleHandleW(None)?;
-        REGISTER.call_once(|| {
-            let class = WNDCLASSEXW {
-                cbSize: size_of::<WNDCLASSEXW>() as u32,
-                lpfnWndProc: Some(procedure),
-                hInstance: instance.into(),
-                hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-                lpszClassName: CLASS,
-                ..Default::default()
-            };
-            RegisterClassExW(&class);
-        });
-
-        let mut cursor = POINT::default();
-        let _ = GetCursorPos(&mut cursor);
-        let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY);
-        let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
-        let _ = GetMonitorInfoW(monitor, &mut info);
-        let (mut dpi, mut _y) = (96, 96);
-        let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi, &mut _y);
-        let scale = dpi.max(96) as f32 / 96.0;
-        let size = (((WIDTH + 2.0 * MARGIN) * scale).ceil() as i32, ((HEIGHT + 2.0 * MARGIN) * scale).ceil() as i32);
-        let work = info.rcWork;
-        let left = work.left + (work.right - work.left - size.0) / 2;
-        let top = work.top + (work.bottom - work.top - size.1) / 2;
-
-        let mut painter = Painter::new(scale)?;
-        let pixels = painter.paint(size, false)?;
         let window = CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             CLASS,
             w!("Snowhush"),
             WS_POPUP,
-            left,
-            top,
-            size.0,
-            size.1,
+            origin.x,
+            origin.y,
+            card.size.0,
+            card.size.1,
             None,
             None,
-            Some(instance.into()),
+            None,
             None,
         )?;
-        present(window, size, &pixels, Some(POINT { x: left, y: top }));
-        WELCOME.set(Some(Welcome { window, scale, size, painter, pressed: false, holding: false, crumble: None }));
+        card::present(window, card.size, &pixels, Some(origin));
+        WELCOME.set(Some(Welcome { window, card, hits, pressed: false, holding: false, crumble: None }));
         let _ = ShowWindow(window, SW_SHOW);
         let _ = SetForegroundWindow(window);
     }
     Ok(())
 }
 
+fn content(pressed: bool) -> Content<'static> {
+    Content { icon: 112.0, title: TITLE, title_size: 34.0, body: BODY, button: "GET STARTED", pressed, closable: false }
+}
+
 unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match message {
         WM_NCHITTEST => {
-            let point = POINT { x: (lparam.0 & 0xffff) as i16 as i32, y: ((lparam.0 >> 16) & 0xffff) as i16 as i32 };
-            let over = WELCOME.with_borrow(|welcome| welcome.as_ref().map(|welcome| welcome.over_button(point, true)));
+            let over = WELCOME.with_borrow(|welcome| welcome.as_ref().map(|welcome| welcome.over_button(card::point(lparam), true)));
             // The card drags the window anywhere but on the button.
             LRESULT(if over == Some(false) { HTCAPTION as isize } else { HTCLIENT as isize })
         }
@@ -203,10 +148,10 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
                 Phase::Move => {}
             }
             let outcome =
-                WELCOME.with_borrow_mut(|welcome| welcome.as_mut().map(|welcome| (welcome.press(lparam, phase), welcome.window, welcome.size)));
+                WELCOME.with_borrow_mut(|welcome| welcome.as_mut().map(|welcome| (welcome.press(lparam, phase), welcome.window, welcome.card.size)));
             if let Some(((clicked, repaint), window, size)) = outcome {
                 if let Some(pixels) = repaint {
-                    present(window, size, &pixels, None);
+                    card::present(window, size, &pixels, None);
                 }
                 if clicked {
                     get_started();
@@ -233,10 +178,10 @@ fn get_started() {
             return None;
         }
         welcome.pressed = false;
-        let base = welcome.painter.paint(welcome.size, false).ok()?;
+        let (base, _) = welcome.card.paint(&content(false)).ok()?;
         let mut rect = RECT::default();
         unsafe { GetWindowRect(welcome.window, &mut rect).ok()? };
-        welcome.crumble = Some(Crumble::new(base, welcome.size, welcome.scale, POINT { x: rect.left, y: rect.top }));
+        welcome.crumble = Some(Crumble::new(base, welcome.card.size, welcome.card.scale, POINT { x: rect.left, y: rect.top }));
         unsafe { SetTimer(Some(welcome.window), TIMER, 15, None) };
         Some(())
     });
@@ -248,16 +193,16 @@ fn get_started() {
 fn tick() {
     let step = WELCOME.with_borrow_mut(|welcome| {
         let welcome = welcome.as_mut()?;
-        let scale = welcome.scale;
+        let scale = welcome.card.scale;
         let crumble = welcome.crumble.as_mut()?;
         let elapsed = crumble.started.elapsed().as_secs_f64();
         let pieces = crumble.pieces(elapsed, scale);
         let frame = crumble.frame(elapsed);
         let done = elapsed >= crumble.duration;
-        Some((pieces, done, frame, welcome.window, welcome.size))
+        Some((pieces, done, frame, welcome.window, welcome.card.size))
     });
     let Some((pieces, done, frame, window, size)) = step else { return };
-    present(window, size, &frame, None);
+    card::present(window, size, &frame, None);
     if !pieces.is_empty()
         && let Some(handlers) = HANDLERS.with_borrow(Clone::clone)
     {
@@ -292,17 +237,13 @@ impl Welcome {
                 let _ = GetWindowRect(self.window, &mut origin);
             }
         }
-        let x = (point.x - origin.left) as f32 / self.scale;
-        let y = (point.y - origin.top) as f32 / self.scale;
-        let button = self.painter.button;
-        x >= button.left && x < button.right && y >= button.top && y < button.bottom
+        card::contains(&self.hits.button, self.card.dips(POINT { x: point.x - origin.left, y: point.y - origin.top }))
     }
 
     /// Tracks the button being held: returns whether it was released over the button, a click,
     /// and the window redrawn if the button's look changed.
     fn press(&mut self, lparam: LPARAM, phase: Phase) -> (bool, Option<Vec<u8>>) {
-        let point = POINT { x: (lparam.0 & 0xffff) as i16 as i32, y: ((lparam.0 >> 16) & 0xffff) as i16 as i32 };
-        let over = self.over_button(point, false);
+        let over = self.over_button(card::point(lparam), false);
         match phase {
             Phase::Down => self.holding = over,
             Phase::Move if !self.holding => return (false, None),
@@ -317,49 +258,7 @@ impl Welcome {
             return (clicked, None);
         }
         self.pressed = pressed;
-        (clicked, self.painter.paint(self.size, pressed).ok())
-    }
-}
-
-/// Shows premultiplied pixels in the layered window, moving it to `position` if given.
-fn present(window: HWND, size: (i32, i32), pixels: &[u8], position: Option<POINT>) {
-    unsafe {
-        let screen = GetDC(None);
-        let memory = CreateCompatibleDC(Some(screen));
-        let info = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: size.0,
-                biHeight: -size.1,
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut bits = std::ptr::null_mut();
-        if let Ok(bitmap) = CreateDIBSection(Some(memory), &info, DIB_RGB_COLORS, &mut bits, None, 0) {
-            std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits.cast::<u8>(), pixels.len());
-            let previous = SelectObject(memory, HGDIOBJ(bitmap.0));
-            let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
-            let size = SIZE { cx: size.0, cy: size.1 };
-            let _ = UpdateLayeredWindow(
-                window,
-                Some(screen),
-                position.as_ref().map(|p| p as *const POINT),
-                Some(&size),
-                Some(memory),
-                Some(&POINT::default()),
-                COLORREF(0),
-                Some(&blend),
-                ULW_ALPHA,
-            );
-            SelectObject(memory, previous);
-            let _ = DeleteObject(HGDIOBJ(bitmap.0));
-        }
-        let _ = DeleteDC(memory);
-        ReleaseDC(None, screen);
+        (clicked, self.card.paint(&content(pressed)).ok().map(|(pixels, _)| pixels))
     }
 }
 
@@ -481,170 +380,4 @@ fn hash(x: i64, y: i64) -> f64 {
     n = (n ^ (n >> 13)).wrapping_mul(1_274_126_177);
     n ^= n >> 16;
     (n & 0xffff) as f64 / 65535.0
-}
-
-/// Draws the card with Direct2D into a bitmap the window shows with per-pixel alpha.
-struct Painter {
-    scale: f32,
-    d2d: ID2D1Factory,
-    text: IDWriteFactory,
-    imaging: IWICImagingFactory,
-    icon: IWICBitmapSource,
-    /// In DIPs from the bitmap's top left.
-    button: D2D_RECT_F,
-}
-
-impl Painter {
-    fn new(scale: f32) -> Result<Painter> {
-        unsafe {
-            let imaging: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
-            let stream = SHCreateMemStream(Some(ICON)).ok_or_else(Error::empty)?;
-            let decoder = imaging.CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnDemand)?;
-            let converter = imaging.CreateFormatConverter()?;
-            converter.Initialize(
-                &decoder.GetFrame(0)?,
-                &GUID_WICPixelFormat32bppPBGRA,
-                WICBitmapDitherTypeNone,
-                None,
-                0.0,
-                WICBitmapPaletteTypeCustom,
-            )?;
-            Ok(Painter {
-                scale,
-                d2d: D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?,
-                text: DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?,
-                imaging,
-                icon: converter.cast()?,
-                button: D2D_RECT_F::default(),
-            })
-        }
-    }
-
-    /// Premultiplied BGRA rows, top down.
-    fn paint(&mut self, size: (i32, i32), pressed: bool) -> Result<Vec<u8>> {
-        unsafe {
-            let bitmap = self.imaging.CreateBitmap(size.0 as u32, size.1 as u32, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad)?;
-            let properties = D2D1_RENDER_TARGET_PROPERTIES {
-                r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
-                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
-                dpiX: 96.0 * self.scale,
-                dpiY: 96.0 * self.scale,
-                usage: D2D1_RENDER_TARGET_USAGE_NONE,
-                minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
-            };
-            let target = self.d2d.CreateWicBitmapRenderTarget(&bitmap, &properties)?;
-            target.BeginDraw();
-            target.Clear(Some(&color([0.0; 3], 0.0)));
-            target.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-            self.draw(&target, pressed)?;
-            target.EndDraw(None, None)?;
-            drop(target);
-
-            let mut pixels = vec![0u8; (size.0 * size.1 * 4) as usize];
-            bitmap.CopyPixels(std::ptr::null(), (size.0 * 4) as u32, &mut pixels)?;
-            Ok(pixels)
-        }
-    }
-
-    unsafe fn draw(&mut self, target: &ID2D1RenderTarget, pressed: bool) -> Result<()> {
-        let card = D2D_RECT_F { left: MARGIN, top: MARGIN, right: MARGIN + WIDTH, bottom: MARGIN + HEIGHT };
-        unsafe {
-            // A soft shadow from stacked translucent outlines, lighter as they spread.
-            let shade = target.CreateSolidColorBrush(&color([0.0; 3], 0.022), None)?;
-            for step in 0..16 {
-                let spread = step as f32 * 1.6;
-                let rect = D2D_RECT_F {
-                    left: card.left - spread,
-                    top: card.top - spread + 10.0,
-                    right: card.right + spread,
-                    bottom: card.bottom + spread + 10.0,
-                };
-                target.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect, radiusX: 18.0 + spread, radiusY: 18.0 + spread }, &shade);
-            }
-            let inset = D2D_RECT_F { left: card.left + 0.5, top: card.top + 0.5, right: card.right - 0.5, bottom: card.bottom - 0.5 };
-            let shape = D2D1_ROUNDED_RECT { rect: inset, radiusX: 18.0, radiusY: 18.0 };
-            target.FillRoundedRectangle(&shape, &target.CreateSolidColorBrush(&color(BACKGROUND, 1.0), None)?);
-            target.DrawRoundedRectangle(&shape, &target.CreateSolidColorBrush(&color([1.0; 3], 0.08), None)?, 1.0, None);
-
-            let title =
-                self.layout(TITLE, w!("Bahnschrift"), DWRITE_FONT_WEIGHT_LIGHT, DWRITE_FONT_STRETCH_CONDENSED, 34.0, WIDTH - 64.0, 38.5, 0.6)?;
-            let body = self.layout(BODY, w!("Segoe UI"), DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 13.5, 330.0, 23.0, 0.0)?;
-            let label = self.layout(BUTTON, w!("Segoe UI"), DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STRETCH_NORMAL, 12.5, 190.0, 0.0, 1.8)?;
-            label.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-            label.SetMaxHeight(44.0)?;
-            let (title_height, body_height) = (height(&title)?, height(&body)?);
-
-            let icon_size = 112.0;
-            let total = icon_size + 10.0 + title_height + 18.0 + body_height + 28.0 + 44.0;
-            let mut y = card.top + (HEIGHT - total) / 2.0;
-            let icon = target.CreateBitmapFromWicBitmap(&self.icon, None)?;
-            let left = card.left + (WIDTH - icon_size) / 2.0;
-            let rect = D2D_RECT_F { left, top: y, right: left + icon_size, bottom: y + icon_size };
-            target.DrawBitmap(&icon, Some(&rect), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
-            y += icon_size + 10.0;
-            target.DrawTextLayout(
-                Vector2 { X: card.left + 32.0, Y: y },
-                &title,
-                &target.CreateSolidColorBrush(&color(INK, 1.0), None)?,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-            );
-            y += title_height + 18.0;
-            let muted = target.CreateSolidColorBrush(&color(MUTED, 1.0), None)?;
-            target.DrawTextLayout(Vector2 { X: card.left + (WIDTH - 330.0) / 2.0, Y: y }, &body, &muted, D2D1_DRAW_TEXT_OPTIONS_NONE);
-            y += body_height + 28.0;
-
-            let left = card.left + (WIDTH - 190.0) / 2.0;
-            self.button = D2D_RECT_F { left, top: y, right: left + 190.0, bottom: y + 44.0 };
-            let fill = if pressed { INK.map(|c| c * 0.88) } else { INK };
-            target.FillRoundedRectangle(
-                &D2D1_ROUNDED_RECT { rect: self.button, radiusX: 2.0, radiusY: 2.0 },
-                &target.CreateSolidColorBrush(&color(fill, 1.0), None)?,
-            );
-            target.DrawTextLayout(
-                Vector2 { X: left, Y: y },
-                &label,
-                &target.CreateSolidColorBrush(&color(LABEL, 1.0), None)?,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-            );
-        }
-        Ok(())
-    }
-
-    fn layout(
-        &self,
-        text: &str,
-        family: PCWSTR,
-        weight: DWRITE_FONT_WEIGHT,
-        stretch: DWRITE_FONT_STRETCH,
-        size: f32,
-        width: f32,
-        line: f32,
-        tracking: f32,
-    ) -> Result<IDWriteTextLayout> {
-        let units: Vec<u16> = text.encode_utf16().collect();
-        unsafe {
-            let format = self.text.CreateTextFormat(family, None, weight, DWRITE_FONT_STYLE_NORMAL, stretch, size, w!("en-us"))?;
-            format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
-            if line > 0.0 {
-                format.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, line, line * 0.8)?;
-            }
-            let layout = self.text.CreateTextLayout(&units, &format, width, 1000.0)?;
-            if tracking > 0.0
-                && let Ok(spaced) = layout.cast::<IDWriteTextLayout1>()
-            {
-                spaced.SetCharacterSpacing(0.0, tracking, 0.0, DWRITE_TEXT_RANGE { startPosition: 0, length: units.len() as u32 })?;
-            }
-            Ok(layout)
-        }
-    }
-}
-
-fn height(layout: &IDWriteTextLayout) -> Result<f32> {
-    let mut metrics = DWRITE_TEXT_METRICS::default();
-    unsafe { layout.GetMetrics(&mut metrics)? };
-    Ok(metrics.height)
-}
-
-fn color(rgb: [f32; 3], alpha: f32) -> D2D1_COLOR_F {
-    D2D1_COLOR_F { r: rgb[0], g: rgb[1], b: rgb[2], a: alpha }
 }
