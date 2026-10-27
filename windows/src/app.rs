@@ -13,8 +13,8 @@ use windows::Win32::System::SystemServices::GUID_CONSOLE_DISPLAY_STATE;
 use windows::Win32::System::Threading::{CreateEventW, SetEvent};
 use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetSystemMetricsForDpi};
 use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETVERSION, NIN_SELECT, NOTIFYICON_VERSION_4, NOTIFYICONDATAW,
-    Shell_NotifyIconW,
+    NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NIN_SELECT,
+    NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, Result, w};
@@ -22,6 +22,7 @@ use windows::core::{PCWSTR, Result, w};
 use crate::log;
 use crate::prefs::{self, Settings};
 use crate::snow::{self, Command, Links};
+use crate::update::{self, Release};
 use crate::welcome::{self, Handlers};
 use snowhush::simulation::Snowfall;
 
@@ -36,18 +37,13 @@ const ID_LOGIN: u32 = 203;
 const ID_WINDOWS: u32 = 204;
 const ID_BEHIND: u32 = 205;
 const ID_QUIT: u32 = 299;
+const ID_UPDATES: u32 = 206;
 const TIMER_WELCOME: usize = 1;
-
-const ICONS: [(i32, &[u8]); 8] = [
-    (16, include_bytes!("../assets/tray-16.png")),
-    (20, include_bytes!("../assets/tray-20.png")),
-    (24, include_bytes!("../assets/tray-24.png")),
-    (28, include_bytes!("../assets/tray-28.png")),
-    (32, include_bytes!("../assets/tray-32.png")),
-    (36, include_bytes!("../assets/tray-36.png")),
-    (40, include_bytes!("../assets/tray-40.png")),
-    (48, include_bytes!("../assets/tray-48.png")),
-];
+const TIMER_UPDATES: usize = 2;
+const WM_UPDATE: u32 = WM_APP + 2;
+/// The shell's message for a click on the tray notification.
+const NIN_BALLOONUSERCLICK: u32 = WM_USER + 5;
+const DAY: u32 = 24 * 60 * 60 * 1000;
 
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
@@ -60,6 +56,8 @@ struct App {
     locked: bool,
     display_off: bool,
     away: bool,
+    /// The download of the update the tray last announced.
+    update: Option<String>,
 }
 
 thread_local! {
@@ -95,7 +93,8 @@ pub fn run() -> Result<()> {
         if !settings.welcomed {
             SetTimer(Some(window), TIMER_WELCOME, 1200, None);
         }
-        APP.set(Some(App { settings, commands, wake, snow, icon, locked: false, display_off: false, away: false }));
+        SetTimer(Some(window), TIMER_UPDATES, 30_000, None);
+        APP.set(Some(App { settings, commands, wake, snow, icon, locked: false, display_off: false, away: false, update: None }));
 
         let mut message = MSG::default();
         while GetMessageW(&mut message, None, 0, 0).as_bool() {
@@ -114,6 +113,10 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
                 let x = (wparam.0 & 0xffff) as i16 as i32;
                 let y = ((wparam.0 >> 16) & 0xffff) as i16 as i32;
                 show_menu(window, x, y);
+            } else if event == NIN_BALLOONUSERCLICK
+                && let Some(url) = APP.with_borrow(|app| app.as_ref().and_then(|app| app.update.clone()))
+            {
+                update::open(&url);
             }
             LRESULT(0)
         }
@@ -137,6 +140,16 @@ unsafe extern "system" fn procedure(window: HWND, message: u32, wparam: WPARAM, 
         }
         WM_CLOSE => {
             quit(window);
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == TIMER_UPDATES => {
+            unsafe { SetTimer(Some(window), TIMER_UPDATES, DAY, None) };
+            check_for_updates(window, false);
+            LRESULT(0)
+        }
+        WM_UPDATE => {
+            let result = unsafe { Box::from_raw(lparam.0 as *mut std::result::Result<Option<Release>, String>) };
+            updated(window, *result, wparam.0 != 0);
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == TIMER_WELCOME => {
@@ -223,6 +236,7 @@ fn show_menu(window: HWND, x: i32, y: i32) {
         let _ = AppendMenuW(menu, MF_STRING | checked(settings.show_in_screenshots), ID_SCREENSHOTS as usize, w!("Show in Screenshots"));
         let _ = AppendMenuW(menu, MF_STRING | checked(login), ID_LOGIN as usize, w!("Open at Login"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(menu, MF_STRING, ID_UPDATES as usize, w!("Check for Updates…"));
         let _ = AppendMenuW(menu, MF_STRING, ID_QUIT as usize, w!("Quit"));
 
         // A tray menu only closes on an outside click while its owner is in the foreground.
@@ -239,6 +253,7 @@ fn choose(window: HWND, chosen: u32, login: bool) {
     match chosen {
         0 => {}
         ID_QUIT => quit(window),
+        ID_UPDATES => check_for_updates(window, true),
         ID_LOGIN => {
             let status = prefs::set_opens_at_login(!login);
             log!("open at login {}: {status:?}", !login);
@@ -279,6 +294,75 @@ fn choose(window: HWND, chosen: u32, login: bool) {
     }
 }
 
+/// Checks on another thread and reports back to the window with `WM_UPDATE`.
+fn check_for_updates(window: HWND, asked: bool) {
+    let target = window.0 as isize;
+    thread::spawn(move || {
+        let result = Box::new(update::check());
+        unsafe {
+            let _ = PostMessageW(Some(HWND(target as _)), WM_UPDATE, WPARAM(asked as usize), LPARAM(Box::into_raw(result) as isize));
+        }
+    });
+}
+
+/// A check someone asked for always answers; the daily one only speaks up, once, about a new version.
+fn updated(window: HWND, result: std::result::Result<Option<Release>, String>, asked: bool) {
+    let current = env!("CARGO_PKG_VERSION");
+    match result {
+        Ok(Some(release)) if asked => {
+            let text = format!("Snowhush {} is available. You have {current}.\n\nDownload it now?", release.version);
+            if message(window, &text, MB_YESNO | MB_ICONINFORMATION) == IDYES {
+                update::open(&release.url);
+            }
+        }
+        Ok(Some(release)) => {
+            let fresh = APP.with_borrow_mut(|app| {
+                let app = app.as_mut()?;
+                (app.update.as_deref() != Some(&release.url)).then(|| app.update = Some(release.url.clone()))
+            });
+            if fresh.is_some() {
+                notify(window, &format!("Snowhush {} is available", release.version), "Click to download it.");
+            }
+        }
+        Ok(None) if asked => {
+            message(window, &format!("You're up to date.\n\nSnowhush {current} is the latest version."), MB_OK | MB_ICONINFORMATION);
+        }
+        Ok(None) => {}
+        Err(error) => {
+            log!("update check failed: {error}");
+            if asked {
+                message(window, &format!("Couldn't check for updates.\n\n{error}"), MB_OK | MB_ICONWARNING);
+            }
+        }
+    }
+}
+
+fn message(window: HWND, text: &str, style: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
+    let text: Vec<u16> = text.encode_utf16().chain([0]).collect();
+    unsafe { MessageBoxW(Some(window), PCWSTR(text.as_ptr()), w!("Snowhush"), style | MB_SETFOREGROUND | MB_TOPMOST) }
+}
+
+/// A notification from the tray icon.
+fn notify(window: HWND, title: &str, text: &str) {
+    let mut data = NOTIFYICONDATAW {
+        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: window,
+        uID: 1,
+        uFlags: NIF_INFO,
+        dwInfoFlags: NIIF_INFO,
+        ..Default::default()
+    };
+    for (slot, unit) in data.szInfoTitle.iter_mut().zip(title.encode_utf16().take(63)) {
+        *slot = unit;
+    }
+    for (slot, unit) in data.szInfo.iter_mut().zip(text.encode_utf16().take(255)) {
+        *slot = unit;
+    }
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
+    }
+}
+
 fn quit(window: HWND) {
     remove_tray_icon(window);
     if let Some(mut app) = APP.with_borrow_mut(Option::take) {
@@ -293,10 +377,14 @@ fn quit(window: HWND) {
     unsafe { PostQuitMessage(0) };
 }
 
+/// The app icon from the executable's resources, at the tray's size for the display's scale.
 fn tray_icon() -> HICON {
-    let size = unsafe { GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForSystem()) };
-    let &(side, png) = ICONS.iter().find(|(side, _)| *side >= size).unwrap_or(&ICONS[ICONS.len() - 1]);
-    unsafe { CreateIconFromResourceEx(png, true, 0x0003_0000, side, side, LR_DEFAULTCOLOR) }.unwrap_or_default()
+    unsafe {
+        let size = GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForSystem());
+        let Ok(instance) = GetModuleHandleW(None) else { return HICON::default() };
+        LoadImageW(Some(instance.into()), PCWSTR(1 as *const u16), IMAGE_ICON, size, size, LR_DEFAULTCOLOR)
+            .map_or(HICON::default(), |icon| HICON(icon.0))
+    }
 }
 
 fn add_tray_icon(window: HWND, icon: HICON) {

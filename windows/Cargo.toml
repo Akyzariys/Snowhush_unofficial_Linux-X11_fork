@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[[bin]]
+name = "Snowhush"
+path = "src/main.rs"
+
 [target.'cfg(windows)'.dependencies]
 windows-numerics = "0.3"
 
@@ -23,6 +27,7 @@ features = [
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Imaging",
+    "Win32_Networking_WinHttp",
     "Win32_Security",
     "Win32_System_Com",
     "Win32_System_LibraryLoader",

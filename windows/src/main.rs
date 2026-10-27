@@ -9,6 +9,7 @@ mod render;
 mod screen;
 mod snow;
 mod tracker;
+mod update;
 mod welcome;
 
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
