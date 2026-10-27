@@ -95,8 +95,9 @@ print -r -- "<p>$notes</p>" > "$dist/appcast/Snowhush.html"
 
 echo "Publishing v$version…"
 git push -q origin HEAD
+# The tag goes on the commit just built, whichever branch it is on.
 gh release create "v$version" "$dist/Snowhush.dmg" "$dist/appcast/appcast.xml" "$dist/Snowhush-Setup.exe" \
-    --repo "$repository" --title "Snowhush $version" --notes "$notes"
+    --repo "$repository" --target "$(git rev-parse HEAD)" --title "Snowhush $version" --notes "$notes"
 echo "Released https://github.com/$repository/releases/tag/v$version"
 
 tap_repository=${HOMEBREW_TAP:-mbezruchko/homebrew-tap}
