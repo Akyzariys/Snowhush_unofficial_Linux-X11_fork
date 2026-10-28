@@ -1,0 +1,10 @@
+Snowhush
+Copyright (c) 2026 Mykhailo Bezruchko
+
+This repository is an unofficial Linux/X11 fork of Snowhush.
+
+Linux/X11 port modifications:
+Copyright (c) 2026 Akyza
+
+The original project and this fork are distributed under the MIT license; see LICENSE. The Linux
+port was developed with AI assistance; see AI_DISCLOSURE.md.
