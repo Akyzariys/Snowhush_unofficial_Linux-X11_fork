@@ -28,6 +28,7 @@ install -m644 "$root/site/assets/icon-64.png" "$stage/snowhush.png"
 install -m644 "$root/LICENSE" "$stage/LICENSE"
 install -m644 "$root/NOTICE" "$stage/NOTICE"
 install -m644 "$root/AI_DISCLOSURE.md" "$stage/AI_DISCLOSURE.md"
+install -m644 "$root/RELEASE_NOTES.md" "$stage/RELEASE_NOTES.md"
 install -m644 README.md "$stage/README.md"
 # The repository README links one directory up; in the flat tarball the disclosure sits beside it.
 sed -i -e 's#\.\./AI_DISCLOSURE\.md#AI_DISCLOSURE.md#g' -e 's#\.\./LICENSE#LICENSE#g' -e 's#\.\./NOTICE#NOTICE#g' "$stage/README.md"
