@@ -1,0 +1,28 @@
+[package]
+name = "snowhush"
+version = "0.6.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+autobins = false
+
+[[bin]]
+name = "Snowhush"
+path = "src/main.rs"
+
+[dependencies]
+bytemuck = { version = "1.16", features = ["derive"] }
+dbus = "0.9"
+ksni = { version = "0.3.7", features = ["blocking"] }
+libc = "0.2"
+png = "0.17"
+pollster = "0.3"
+wgpu = "0.20.1"
+winit = { version = "0.29.15", default-features = false, features = ["x11", "rwh_06"] }
+x11rb = { version = "0.13.1", features = ["shape"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
