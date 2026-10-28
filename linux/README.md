@@ -37,6 +37,10 @@ For a debug build with symbols: `cargo build && ./target/debug/Snowhush`.
 
 ## Install
 
+Prebuilt Linux archives are on the
+[releases page](https://github.com/Akyzariys/Snowhush_unofficial_Linux-X11_fork/releases). To build
+and install from source:
+
 ```sh
 cd linux
 ./install.sh            # ~/.local/bin/Snowhush, menu entry, icon

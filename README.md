@@ -16,7 +16,9 @@
   &nbsp;·&nbsp;
   <a href="https://github.com/mbezruchko/Snowhush/releases/latest/download/Snowhush-Setup.exe"><b>Download for Windows</b></a>
   &nbsp;·&nbsp;
-  <a href="linux/README.md"><b>Linux (X11)</b></a>
+  <a href="https://github.com/Akyzariys/Snowhush_unofficial_Linux-X11_fork/releases/latest"><b>Download for Linux</b></a>
+  &nbsp;·&nbsp;
+  <a href="linux/README.md"><b>Linux notes</b></a>
   &nbsp;·&nbsp;
   <a href="https://snowhush.pages.dev">snowhush.pages.dev</a>
   <br>
